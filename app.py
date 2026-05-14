@@ -69,6 +69,8 @@ def _export_to_path(companies: list[dict], filepath: Path):
         ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{n + 1}"
 
     def add_dv(ws, n):
+        if n == 0:
+            return
         dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
         dv.sqref = MultiCellRange(f"K2:K{n + 1}")
         ws.add_data_validation(dv)

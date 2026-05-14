@@ -561,6 +561,8 @@ def _add_filter(ws, n: int):
 
 
 def _add_dv(ws, n: int):
+    if n == 0:
+        return
     dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
     dv.sqref = MultiCellRange(f"K2:K{n + 1}")
     ws.add_data_validation(dv)
