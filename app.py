@@ -41,8 +41,8 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
 
 JOBS: dict[str, dict] = {}   # job_id → { status, companies, filename, error, queue }
-DOWNLOADS_DIR = Path("downloads")
-DOWNLOADS_DIR.mkdir(exist_ok=True)
+DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "downloads"))
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 log = logging.getLogger(__name__)
 
