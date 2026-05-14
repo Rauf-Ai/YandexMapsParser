@@ -1,7 +1,9 @@
 __pycache__/
 *.py[cod]
 *.xlsx
+*.zip
 *.log
 .env
 venv/
 .venv/
+downloads/
