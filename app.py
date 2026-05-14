@@ -22,6 +22,7 @@ from yandex_parser import (
     apply_filters, collect, export_excel,
     _build_columns,
 )
+from org_collector import collect_org_zip
 
 app = Flask(__name__)
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "downloads"))
@@ -344,6 +345,95 @@ def api_history_delete(entry_id):
     hist = [e for e in _load_history() if e.get("id") != entry_id]
     _save_history(hist)
     return jsonify(ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Org-collect job
+# ---------------------------------------------------------------------------
+def _run_org_job(job_id: str, company: dict):
+    job = JOBS[job_id]
+    q: queue.Queue = job["queue"]
+
+    def emit(event: str, **data):
+        q.put({"event": event, "data": data})
+
+    def emit_progress(message, **_):
+        emit("progress", message=message)
+
+    try:
+        emit("start", message=f"Сбор данных: «{company.get('name', '')}»")
+
+        zip_filename = collect_org_zip(
+            company=company,
+            out_dir=DOWNLOADS_DIR,
+            emit=emit_progress,
+        )
+
+        job["status"]   = "done"
+        job["filename"] = zip_filename
+
+        # Count items inside the ZIP
+        reviews_count = photos_count = 0
+        try:
+            import zipfile as _zf, json as _json
+            with _zf.ZipFile(DOWNLOADS_DIR / zip_filename) as zf:
+                if "reviews.json" in zf.namelist():
+                    reviews_count = len(_json.loads(zf.read("reviews.json")))
+                photos_count = sum(1 for n in zf.namelist() if n.startswith("photos/"))
+        except Exception:
+            pass
+
+        # History entry
+        hist  = _load_history()
+        entry = {
+            "id":            job_id,
+            "query":         company.get("name", ""),
+            "date":          date.today().isoformat(),
+            "time":          datetime.now().strftime("%H:%M"),
+            "total":         0,
+            "with_site":     0,
+            "filename":      zip_filename,
+            "type":          "org_collect",
+            "company":       company.get("name", ""),
+            "reviews_count": reviews_count,
+            "photos_count":  photos_count,
+            "filters":       {},
+        }
+        hist.insert(0, entry)
+        _save_history(hist[:50])
+
+        emit("done",
+             zip_filename=zip_filename,
+             reviews_count=reviews_count,
+             photos_count=photos_count)
+
+    except Exception as exc:
+        log.exception("Org job %s crashed", job_id)
+        job["status"] = "error"
+        q.put({"event": "error", "data": {"message": str(exc)}})
+    finally:
+        q.put(None)
+
+
+@app.post("/api/start-org")
+def api_start_org():
+    body    = request.get_json(force=True)
+    company = body.get("company") or {}
+    if not company.get("name"):
+        return jsonify(error="Нет данных о компании"), 400
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "running", "query": company.get("name", ""),
+        "filename": None, "error": None,
+        "queue": queue.Queue(),
+    }
+    threading.Thread(
+        target=_run_org_job,
+        args=(job_id, company),
+        daemon=True,
+    ).start()
+    return jsonify(job_id=job_id, name=company.get("name", ""))
 
 
 if __name__ == "__main__":

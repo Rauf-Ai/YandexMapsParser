@@ -339,6 +339,27 @@
 
 <footer class="footer">Яндекс Карты Парсер · Python + Flask + openpyxl</footer>
 
+<!-- ── Collect overlay (floating, bottom-right) ──────────────────────── -->
+<div id="collectOverlay" class="collect-overlay hidden">
+  <div class="collect-header">
+    <span class="collect-icon">📦</span>
+    <div class="collect-title-wrap">
+      <div class="collect-label">Сбор данных компании</div>
+      <div class="collect-name" id="collectOrgName">…</div>
+    </div>
+    <button class="btn-ghost btn-sm" id="collectCancelBtn" title="Закрыть">✕</button>
+  </div>
+  <div class="progress-track" style="margin:8px 0 4px">
+    <div class="progress-bar" id="collectBar"></div>
+  </div>
+  <div class="log-box" id="collectLog" style="max-height:90px;font-size:.7rem"></div>
+  <div class="collect-footer">
+    <a id="collectDownloadBtn" class="btn-primary hidden"
+       style="padding:8px 16px;font-size:.82rem;width:100%;justify-content:center"
+       href="#">↓ Скачать ZIP-архив</a>
+  </div>
+</div>
+
 <script src="/static/app.js"></script>
 </body>
 </html>

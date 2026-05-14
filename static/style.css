@@ -364,6 +364,37 @@ form { display: flex; flex-direction: column; gap: 16px; }
 .history-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .history-empty  { color: var(--muted); font-size: .86rem; text-align: center; padding: 18px 0; }
 
+/* ── History org-collect entries ────────────────────────────── */
+.history-item--org { background: #f0f7ff; border-color: #c0d8f0; }
+.history-item--org:hover { border-color: var(--accent); }
+.history-org-icon  { font-size: 1.3rem; flex-shrink: 0; line-height: 1; }
+
+/* ── Collect button in table ─────────────────────────────────── */
+.td-actions        { display: flex; gap: 6px; align-items: center; }
+.btn-collect       { background: none; border: 1px solid var(--border); border-radius: 6px;
+                     cursor: pointer; font-size: .95rem; padding: 2px 5px; line-height: 1;
+                     transition: border-color .15s, background .15s; }
+.btn-collect:hover { border-color: var(--accent); background: #eaf1ff; }
+
+/* ── Collect overlay ─────────────────────────────────────────── */
+.collect-overlay {
+  position: fixed; bottom: 24px; right: 24px; z-index: 9999;
+  width: 340px; background: #fff; border: 1px solid var(--border);
+  border-radius: 12px; box-shadow: 0 8px 28px rgba(0,0,0,.14);
+  padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 8px;
+}
+.collect-overlay.hidden { display: none; }
+.collect-header  { display: flex; align-items: center; gap: 10px; }
+.collect-icon    { font-size: 1.4rem; flex-shrink: 0; }
+.collect-title-wrap { flex: 1; min-width: 0; }
+.collect-label   { font-size: .72rem; color: var(--muted); }
+.collect-name    { font-weight: 600; font-size: .88rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.collect-footer  { display: flex; justify-content: flex-end; }
+.log-box         { font-size: .72rem; color: #444; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+.log-line        { display: block; }
+.log-line--ok    { color: var(--green); }
+.log-line--err   { color: #c00; }
+
 /* ── Footer ──────────────────────────────────────────────────── */
 .footer { text-align: center; padding: 20px; color: var(--muted); font-size: .76rem; border-top: 1px solid var(--border); }
 

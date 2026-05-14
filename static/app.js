@@ -28,6 +28,9 @@ let selectedFeatureTags = new Set();
 let selectedServiceTags = new Set();
 let activeQuickFilters  = new Set();   // each entry = "kw1,kw2,..." string from data-kws
 
+// Org-collect state
+let currentCollectSSE   = null;
+
 // ── DOM helpers ──────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
@@ -391,7 +394,7 @@ function renderTablePage() {
   $("tableCount").textContent =
     `${filteredRows.length} из ${allCompanies.length} компаний`;
 
-  tbody.innerHTML = slice.map(c => `
+  tbody.innerHTML = slice.map((c, idx) => `
     <tr>
       <td class="td-name" title="${esc(c.name)}">${esc(trunc(c.name, 35))}</td>
       <td class="td-mono">${esc(c.phone)}</td>
@@ -406,9 +409,11 @@ function renderTablePage() {
       <td class="td-price">${c.price_range ? esc(c.price_range) : '<span class="td-muted">—</span>'}</td>
       <td>${renderTags(c.services, "srv")}</td>
       <td>${renderTags(c.features, "ftr")}</td>
-      <td>${c.map_url
-        ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps">🗺</a>`
-        : "—"}</td>
+      <td class="td-actions">
+        ${c.map_url ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps" title="Яндекс Карты">🗺</a>` : ""}
+        <button class="btn-collect" data-idx="${start + idx}"
+                title="Выгрузить отзывы, фото, акции → ZIP + промт для Claude">📦</button>
+      </td>
     </tr>`).join("");
 
   renderPagination();
@@ -433,8 +438,17 @@ function renderTags(raw, type) {
   }<span class="tag-chip tag-chip--more">+${rest} ещё</span></div>`;
 }
 
-// Delegated click: expand / collapse +N chip
+// Delegated click: collect button OR expand tag
 $("mainTableBody").addEventListener("click", e => {
+  // 📦 Collect button
+  const collectBtn = e.target.closest(".btn-collect");
+  if (collectBtn) {
+    const idx = parseInt(collectBtn.dataset.idx, 10);
+    startOrgCollect(filteredRows[idx]);
+    return;
+  }
+
+  // +N tag expand / collapse
   const chip = e.target.closest(".tag-chip--more");
   if (!chip) return;
   const cell = chip.closest(".tag-cell[data-raw]");
@@ -522,6 +536,79 @@ $("mainTable").addEventListener("click", e => {
   if (el) el.addEventListener("input", applyTableFilters);
 });
 
+// ── Org collect (📦) ─────────────────────────────────────────────────────
+
+async function startOrgCollect(company) {
+  if (!company) return;
+  $("collectOrgName").textContent = company.name || "…";
+  $("collectBar").style.width = "0%";
+  $("collectLog").innerHTML = "";
+  $("collectDownloadBtn").classList.add("hidden");
+  $("collectOverlay").classList.remove("hidden");
+
+  try {
+    const res  = await fetch("/api/start-org", {
+      method:  "POST",
+      headers: { "Content-Type": "application/json" },
+      body:    JSON.stringify({ company }),
+    });
+    const json = await res.json();
+    if (!res.ok || json.error) throw new Error(json.error || "Ошибка запуска");
+    startCollectSSE(json.job_id);
+  } catch (err) {
+    addCollectLog("Ошибка: " + err.message, "err");
+  }
+}
+
+function startCollectSSE(jobId) {
+  if (currentCollectSSE) { currentCollectSSE.close(); }
+  const sse = new EventSource(`/api/stream/${jobId}`);
+  currentCollectSSE = sse;
+  let step = 0;
+  const STEPS = 10;
+
+  sse.addEventListener("start",    e => addCollectLog(JSON.parse(e.data).message, "ok"));
+  sse.addEventListener("progress", e => {
+    step = Math.min(step + 1, STEPS - 1);
+    $("collectBar").style.width = Math.round(step / STEPS * 90) + "%";
+    addCollectLog(JSON.parse(e.data).message);
+  });
+  sse.addEventListener("done", e => {
+    sse.close(); currentCollectSSE = null;
+    $("collectBar").style.width = "100%";
+    const d = JSON.parse(e.data);
+    const dl = $("collectDownloadBtn");
+    dl.href = `/api/download/${encodeURIComponent(d.zip_filename)}`;
+    dl.setAttribute("download", d.zip_filename);
+    dl.classList.remove("hidden");
+    addCollectLog(
+      `✓ Готово! Отзывов: ${d.reviews_count}, фото: ${d.photos_count}`, "ok"
+    );
+    loadHistory();
+  });
+  sse.addEventListener("error", e => {
+    sse.close(); currentCollectSSE = null;
+    let msg = "Ошибка";
+    try { msg = JSON.parse(e.data).message; } catch {}
+    addCollectLog(msg, "err");
+  });
+  sse.addEventListener("close", () => { sse.close(); currentCollectSSE = null; });
+}
+
+function addCollectLog(text, type = "") {
+  const span = document.createElement("span");
+  span.className = "log-line" + (type ? ` log-line--${type}` : "");
+  span.textContent = `[${new Date().toLocaleTimeString("ru")}] ${text}`;
+  const box = $("collectLog");
+  box.appendChild(span);
+  box.scrollTop = box.scrollHeight;
+}
+
+$("collectCancelBtn").addEventListener("click", () => {
+  if (currentCollectSSE) { currentCollectSSE.close(); currentCollectSSE = null; }
+  $("collectOverlay").classList.add("hidden");
+});
+
 // ── History ───────────────────────────────────────────────────────────────
 async function loadHistory() {
   try {
@@ -540,6 +627,25 @@ function renderHistory(entries) {
   }
   list.className = "history-list";
   list.innerHTML = entries.map(e => {
+    if (e.type === "org_collect") {
+      const meta = [];
+      if (e.reviews_count) meta.push(`отзывов: ${e.reviews_count}`);
+      if (e.photos_count)  meta.push(`фото: ${e.photos_count}`);
+      return `
+        <div class="history-item history-item--org">
+          <span class="history-org-icon">📦</span>
+          <div style="flex:1;min-width:0">
+            <div class="history-query">${esc(e.company || e.query)}</div>
+            <div class="history-meta">${e.date} в ${e.time} · выгрузка данных${meta.length ? " · " + meta.join(", ") : ""}</div>
+          </div>
+          <div class="history-actions">
+            <a class="btn-secondary" style="padding:5px 12px;font-size:.78rem"
+               href="/api/download/${encodeURIComponent(e.filename)}"
+               download="${esc(e.filename)}">↓ ZIP</a>
+            <button class="btn-ghost btn-sm" data-del="${esc(e.id)}">✕</button>
+          </div>
+        </div>`;
+    }
     const tags = [];
     if (e.filters?.no_site)   tags.push("без сайта");
     if (e.filters?.no_social) tags.push("без соцсетей");

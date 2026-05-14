@@ -1,0 +1,516 @@
+"""
+org_collector.py — Per-organisation deep data collector.
+
+Fetches reviews, photos, working hours, description, and news/promotions
+for a single Yandex Maps organisation, then packages everything into a
+ZIP archive containing:
+
+  info.json      — structured company data
+  reviews.json   — customer reviews
+  news.json      — promotions / news
+  summary.txt    — human-readable summary
+  PROMPT.md      — ready-to-use Claude Code prompt for landing page creation
+  README.txt     — usage instructions
+  photos/        — downloaded photos (if found)
+"""
+
+import io
+import json
+import logging
+import re
+import zipfile
+from datetime import datetime
+from pathlib import Path
+
+from bs4 import BeautifulSoup
+
+from yandex_parser import SESSION, _sleep
+
+log = logging.getLogger(__name__)
+
+# Yandex avatars CDN: match business/org photo URLs
+_PHOTO_RE = re.compile(
+    r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc)"
+    r"/\d+/[a-zA-Z0-9_\-]+/(?:orig|L|XL|XXL)",
+    re.IGNORECASE,
+)
+
+# ── Low-level helpers ─────────────────────────────────────────────────────
+
+def _fetch(url: str):
+    try:
+        r = SESSION.get(url, timeout=15)
+        if r.status_code == 200:
+            return r
+    except Exception as exc:
+        log.debug("fetch %s: %s", url, exc)
+    return None
+
+
+def _parse_jsonld(soup) -> list:
+    blocks = []
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            blocks.append(json.loads(tag.string or ""))
+        except Exception:
+            pass
+    return blocks
+
+
+# ── Data extractors ───────────────────────────────────────────────────────
+
+def _extract_reviews(soup, jsonld_blocks: list) -> list[dict]:
+    reviews: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(text, author="", rating="", date=""):
+        t = text.strip()
+        if t and t not in seen and len(t) >= 15:
+            seen.add(t)
+            reviews.append({"author": author, "rating": rating,
+                             "date": date, "text": t})
+
+    # JSON-LD review entries (SEO-rendered on some org pages)
+    for block in jsonld_blocks:
+        items = block if isinstance(block, list) else [block]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for entity in ([item] + (item.get("@graph") or [])):
+                if not isinstance(entity, dict):
+                    continue
+                for rev in (entity.get("review") or entity.get("reviews") or []):
+                    if not isinstance(rev, dict):
+                        continue
+                    text = rev.get("reviewBody") or rev.get("description") or ""
+                    a = rev.get("author")
+                    author = (a.get("name", "") if isinstance(a, dict) else str(a or ""))
+                    ar = rev.get("reviewRating") or {}
+                    _add(text, author=author,
+                         rating=str(ar.get("ratingValue", "")),
+                         date=str(rev.get("datePublished", "")))
+
+    # HTML selectors (work when Yandex pre-renders review text for SEO)
+    for sel in [
+        ".business-review-view__body-text",
+        "[class*='review-view__body-text']",
+        "[itemprop='reviewBody']",
+    ]:
+        for el in soup.select(sel):
+            _add(el.get_text(strip=True))
+
+    return reviews
+
+
+def _extract_org_details(soup, jsonld_blocks: list) -> dict:
+    info = {"hours": "", "description": ""}
+
+    for block in jsonld_blocks:
+        items = block if isinstance(block, list) else [block]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for entity in ([item] + (item.get("@graph") or [])):
+                if not isinstance(entity, dict):
+                    continue
+                if not info["description"]:
+                    desc = entity.get("description") or ""
+                    if isinstance(desc, str) and len(desc) > 10:
+                        info["description"] = desc[:2000]
+                if not info["hours"]:
+                    oh = (entity.get("openingHours")
+                          or entity.get("openingHoursSpecification"))
+                    if oh:
+                        info["hours"] = (
+                            "; ".join(str(h) for h in oh)
+                            if isinstance(oh, list) else str(oh)
+                        )[:400]
+
+    if not info["description"]:
+        for sel in [
+            ".business-card-description-view__text",
+            "[itemprop='description']",
+        ]:
+            el = soup.select_one(sel)
+            if el:
+                info["description"] = el.get_text(strip=True)[:2000]
+                break
+
+    if not info["hours"]:
+        for sel in [
+            "[class*='business-working-status']",
+            "[itemprop='openingHours']",
+        ]:
+            els = soup.select(sel)
+            if els:
+                info["hours"] = "; ".join(e.get_text(strip=True) for e in els)[:400]
+                break
+
+    return info
+
+
+def _extract_photo_urls(html: str, max_photos: int = 20) -> list[str]:
+    seen_keys: set[str] = set()
+    urls: list[str] = []
+    for m in _PHOTO_RE.finditer(html):
+        url = re.sub(r"/(?:L|XL|XXL)$", "/orig", m.group(0))
+        parts = url.rstrip("/").split("/")
+        key = parts[-2] if len(parts) >= 2 else url
+        if key not in seen_keys:
+            seen_keys.add(key)
+            urls.append(url)
+            if len(urls) >= max_photos:
+                break
+    return urls
+
+
+def _extract_news(soup) -> list[dict]:
+    news: list[dict] = []
+    seen: set[str] = set()
+    for sel in [
+        "[class*='story-view__title']",
+        "[class*='promotion-view__title']",
+        "[class*='action-view__title']",
+        "[class*='news-view__title']",
+        "[class*='story-snippet__title']",
+    ]:
+        for el in soup.select(sel):
+            text = el.get_text(strip=True)
+            if text and len(text) > 5 and text not in seen:
+                seen.add(text)
+                news.append({"text": text[:500]})
+    return news[:20]
+
+
+# ── Main collection entry point ───────────────────────────────────────────
+
+def collect_org_zip(
+    company: dict,
+    out_dir: Path,
+    emit=None,
+    max_reviews: int = 100,
+    max_photos: int = 20,
+) -> str:
+    """
+    Collect all available data for one org and package as ZIP.
+    Returns the ZIP filename (relative to out_dir).
+
+    emit — optional callable(event, **kwargs) for SSE progress.
+    """
+    def _emit(msg: str):
+        if emit:
+            emit("progress", message=msg)
+
+    oid  = company.get("oid", "")
+    name = company.get("name", "company")
+
+    # 1 ── Main org page ───────────────────────────────────────────────
+    _emit(f"Загружаем страницу: {name}…")
+    resp  = _fetch(f"https://yandex.ru/maps/org/{oid}/") if oid else None
+    html  = resp.text if resp else ""
+    soup  = BeautifulSoup(html, "html.parser")
+    jsonld = _parse_jsonld(soup)
+
+    # 2 ── Reviews page ────────────────────────────────────────────────
+    _sleep(0.5, 1.0)
+    _emit("Загружаем страницу отзывов…")
+    rev_resp = _fetch(f"https://yandex.ru/maps/org/{oid}/reviews/") if oid else None
+    if rev_resp:
+        rsoup  = BeautifulSoup(rev_resp.text, "html.parser")
+        rjsonld = _parse_jsonld(rsoup)
+        reviews = _extract_reviews(rsoup, rjsonld)
+    else:
+        reviews = []
+    if not reviews:                         # supplement from main page
+        reviews = _extract_reviews(soup, jsonld)
+    reviews = reviews[:max_reviews]
+    _emit(f"Отзывов: {len(reviews)}")
+
+    # 3 ── Extended org details ────────────────────────────────────────
+    _sleep(0.3, 0.5)
+    details = _extract_org_details(soup, jsonld)
+
+    # 4 ── Photo URLs ──────────────────────────────────────────────────
+    _emit("Ищем фотографии…")
+    photo_urls = _extract_photo_urls(html, max_photos)
+    _emit(f"Фотографий найдено: {len(photo_urls)}")
+
+    # 5 ── News / promotions ───────────────────────────────────────────
+    _sleep(0.3, 0.5)
+    _emit("Ищем акции…")
+    news = _extract_news(soup)
+    _emit(f"Акций/новостей: {len(news)}")
+
+    # 6 ── Build full info dict ────────────────────────────────────────
+    info = {
+        "name":          name,
+        "category":      company.get("category",    ""),
+        "address":       company.get("address",     ""),
+        "phone":         company.get("phone",       ""),
+        "site":          company.get("site",        ""),
+        "social":        company.get("social",      ""),
+        "rating":        company.get("rating",      ""),
+        "reviews_count": company.get("reviews",     0),
+        "services":      company.get("services",    ""),
+        "features":      company.get("features",    ""),
+        "price_range":   company.get("price_range", ""),
+        "map_url":       company.get("map_url",     ""),
+        "lat":           company.get("lat",         ""),
+        "lon":           company.get("lon",         ""),
+        "hours":         details.get("hours",       ""),
+        "description":   details.get("description", ""),
+    }
+
+    # 7 ── Build ZIP (text files first) ───────────────────────────────
+    _emit("Формируем архив…")
+    safe  = re.sub(r"[^\w\-а-яА-Я]", "_", name)[:40]
+    ts    = datetime.now().strftime("%Y%m%d_%H%M%S")
+    fname = f"org_{safe}_{ts}.zip"
+    fpath = out_dir / fname
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("info.json",    json.dumps(info,    ensure_ascii=False, indent=2))
+        zf.writestr("reviews.json", json.dumps(reviews, ensure_ascii=False, indent=2))
+        zf.writestr("news.json",    json.dumps(news,    ensure_ascii=False, indent=2))
+        zf.writestr("summary.txt",  _make_summary(info, reviews, news))
+        zf.writestr("PROMPT.md",    _make_prompt(info, reviews, news))
+        zf.writestr("README.txt",   _make_readme())
+    fpath.write_bytes(buf.getvalue())
+
+    # 8 ── Download photos and append to ZIP ──────────────────────────
+    ok = 0
+    if photo_urls:
+        _emit(f"Скачиваем фото (0/{len(photo_urls)})…")
+        buf2 = io.BytesIO(fpath.read_bytes())
+        with zipfile.ZipFile(buf2, "a", zipfile.ZIP_STORED) as zf:
+            for i, url in enumerate(photo_urls, 1):
+                ext = ("webp" if ".webp" in url.lower()
+                       else "png" if ".png" in url.lower() else "jpg")
+                try:
+                    r = SESSION.get(url, timeout=20)
+                    ct = r.headers.get("content-type", "")
+                    if r.status_code == 200 and "image" in ct:
+                        zf.writestr(f"photos/photo_{i:02d}.{ext}", r.content)
+                        ok += 1
+                        _emit(f"Скачиваем фото ({ok}/{len(photo_urls)})…")
+                except Exception as exc:
+                    log.debug("photo %d: %s", i, exc)
+                _sleep(0.2, 0.5)
+        fpath.write_bytes(buf2.getvalue())
+        _emit(f"Фото загружено: {ok}/{len(photo_urls)}")
+
+    return fname
+
+
+# ── Text generators ───────────────────────────────────────────────────────
+
+def _make_summary(info: dict, reviews: list, news: list) -> str:
+    lines = [
+        f"# {info['name']}", "",
+        f"Категория:    {info['category']}",
+        f"Адрес:        {info['address']}",
+        f"Телефон:      {info['phone']}",
+        f"Сайт:         {info['site']}",
+        f"Соцсети:      {info['social']}",
+        f"Рейтинг:      {info['rating']} ({info['reviews_count']} отзывов)",
+        f"Часы работы:  {info['hours'] or '—'}",
+        f"Цены:         {info['price_range'] or '—'}",
+        f"Карты:        {info['map_url']}", "",
+        "Описание:",
+        info["description"] or "(нет)", "",
+        f"Услуги:       {info['services'] or '—'}",
+        f"Особенности:  {info['features'] or '—'}",
+    ]
+    if reviews:
+        lines += ["", "─" * 60, f"ОТЗЫВЫ ({len(reviews)} шт.)", "─" * 60]
+        for i, r in enumerate(reviews, 1):
+            a = r.get("author") or "Аноним"
+            rt = r.get("rating") or ""
+            d  = r.get("date") or ""
+            hdr = f"[{i}] {a}" + (f"  ★{rt}" if rt else "") + (f"  ({d})" if d else "")
+            lines += ["", hdr, r.get("text", "")]
+    if news:
+        lines += ["", "─" * 60, f"АКЦИИ И НОВОСТИ ({len(news)} шт.)", "─" * 60]
+        for i, n in enumerate(news, 1):
+            lines += [f"\n{i}. {n.get('text', '')}"]
+    return "\n".join(lines)
+
+
+def _make_prompt(info: dict, reviews: list, news: list) -> str:
+    """Generate a Claude Code prompt for one-shot landing page creation."""
+
+    # Format reviews as Markdown blockquotes
+    if reviews:
+        rev_parts = []
+        for r in reviews[:25]:
+            text = (r.get("text") or "").strip()
+            if not text:
+                continue
+            a  = r.get("author") or "Аноним"
+            rt = r.get("rating") or ""
+            d  = r.get("date")   or ""
+            meta = a + (f" ★{rt}" if rt else "") + (f" · {d}" if d else "")
+            rev_parts.append(f"> **{meta}**  \n> {text}")
+        rev_block = "\n\n".join(rev_parts) if rev_parts else "_Отзывы не найдены._"
+    else:
+        rev_block = "_Отзывы не найдены._"
+
+    news_block = (
+        "\n".join(f"- {n.get('text', '')}" for n in news if n.get("text"))
+        or "_Акции не найдены._"
+    )
+
+    try:
+        stars = "⭐" * round(float(str(info["rating"]).replace(",", ".")))
+    except Exception:
+        stars = ""
+
+    phone_clean = re.sub(r"[^+\d]", "", str(info.get("phone", "")))
+
+    return f"""\
+# Создай лендинг для «{info['name']}»
+
+Ты — опытный фронтенд-разработчик и дизайнер. На основе реальных данных ниже создай
+профессиональный одностраничный сайт-лендинг.
+
+---
+
+## 📋 Данные компании (источник — Яндекс Карты)
+
+| Поле | Значение |
+|---|---|
+| **Название** | {info['name']} |
+| **Категория** | {info['category']} |
+| **Адрес** | {info['address']} |
+| **Телефон** | {info['phone']} |
+| **Сайт** | {info['site']} |
+| **Соцсети** | {info['social']} |
+| **Рейтинг** | {info['rating']} {stars} ({info['reviews_count']} отзывов) |
+| **Часы работы** | {info['hours'] or '—'} |
+| **Диапазон цен** | {info['price_range'] or '—'} |
+| **Услуги** | {info['services'] or '—'} |
+| **Особенности** | {info['features'] or '—'} |
+| **Описание** | {(info['description'] or '—')[:300]} |
+| **Яндекс Карты** | {info['map_url']} |
+
+---
+
+## 💬 Реальные отзывы клиентов
+
+{rev_block}
+
+---
+
+## 🎯 Акции и новости
+
+{news_block}
+
+---
+
+## 🛠 Техническое задание
+
+### Технологии
+- Один файл **`index.html`** — открывается без сервера через `file://`
+- **Tailwind CSS** через CDN (`https://cdn.tailwindcss.com`)
+- **Font Awesome 6** через CDN для иконок
+- Ванильный JavaScript (без фреймворков и сборщиков)
+
+### Структура страницы (сверху вниз)
+
+**1. Sticky header** — логотип/название, навигация-якоря, кнопка «Позвонить»
+
+**2. Hero** (полный экран):
+- Заголовок — название компании
+- Слоган — придумай яркий, релевантный тематике «{info['category']}»
+- Рейтинг: {info['rating']} {stars} ({info['reviews_count']} отзывов)
+- CTA: «📞 Позвонить» → `tel:{phone_clean}` · «📍 На карте» → `{info['map_url']}`
+- Фон: `photos/photo_01.jpg` если есть, иначе градиент под тематику
+
+**3. О нас** — описание + 3–4 иконки-преимущества из «Особенностей»:
+`{info['features'] or 'Профессионализм, Качество, Опыт'}`
+
+**4. Услуги** — карточки из поля «Услуги»:
+`{info['services'] or '(добавь ключевые услуги из категории)'}`
+Цены: {info['price_range'] or 'уточняйте'}
+
+**5. Галерея** *(только если папка `photos/` не пустая)*
+```html
+<img src="photos/photo_01.jpg" alt="Фото">
+<img src="photos/photo_02.jpg" alt="Фото">
+```
+Grid 2–4 колонки, все фото из папки `photos/`.
+
+**6. Отзывы** — карточки с реальными отзывами из раздела выше.
+⚠️ Показывай только реальные — не выдумывай.
+
+**7. Акции** *(только если данные есть в разделе «Акции» выше)*
+
+**8. Контакты**
+- Адрес: {info['address']}
+- Телефон: {info['phone']}
+- Соцсети: {info['social']}
+- Часы: {info['hours'] or 'уточняйте'}
+- Кнопка «Открыть в Яндекс Картах» → `{info['map_url']}`
+
+**9. Footer** — название, год, соцсети-иконки
+
+### Дизайн
+
+- Цветовую палитру подбери под тематику **«{info['category']}»**
+  (медицина → синий/белый; красота → пастель; еда → тёплые тона; авто → тёмный/серый)
+- Современный вид, не шаблонный
+- Mobile-first, полностью адаптивный
+- Плавное появление секций при скролле (`IntersectionObserver`)
+
+### Правила контента
+
+| ⛔ Нельзя | ✅ Можно |
+|---|---|
+| Выдумывать отзывы | Придумывать слоган |
+| Добавлять несуществующие услуги | Дописывать текст преимуществ |
+| Изменять контакты | Выбирать цветовую схему |
+| Придумывать цены | Придумывать заголовки секций |
+
+---
+
+Создай файл `index.html`. Если папка `photos/` не пустая — используй фото.
+Если данных (отзывов, акций) нет — скрывай соответствующие секции.
+"""
+
+
+def _make_readme() -> str:
+    return """\
+Содержимое архива
+=================
+
+  info.json     — данные компании (JSON)
+  reviews.json  — отзывы клиентов с Яндекс Карт (JSON)
+  news.json     — акции и новости (JSON)
+  summary.txt   — читаемая сводка всех данных
+  PROMPT.md     — готовый промт для Claude Code (создание лендинга)
+  README.txt    — этот файл
+  photos/       — фотографии компании (если найдены)
+
+Как использовать PROMPT.md
+--------------------------
+
+Вариант 1 — Claude Code CLI (рекомендуется):
+  1. Распакуй архив: unzip org_*.zip -d landing/
+  2. cd landing/
+  3. Запусти: claude
+  4. Вставь содержимое PROMPT.md в чат Claude Code
+
+Вариант 2 — Через аргумент CLI:
+  cd landing/ && claude "$(cat PROMPT.md)"
+
+Вариант 3 — claude.ai/code (веб):
+  1. Распакуй архив
+  2. Открой claude.ai/code, добавь папку как проект
+  3. Вставь PROMPT.md в чат
+
+После генерации index.html:
+  - Открой в браузере: open index.html
+  - Фото из photos/ подключены автоматически
+  - Отредактируй под финальные требования клиента
+"""
