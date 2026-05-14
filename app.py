@@ -357,16 +357,13 @@ def _run_org_job(job_id: str, company: dict):
     def emit(event: str, **data):
         q.put({"event": event, "data": data})
 
-    def emit_progress(message, **_):
-        emit("progress", message=message)
-
     try:
         emit("start", message=f"Сбор данных: «{company.get('name', '')}»")
 
         zip_filename = collect_org_zip(
             company=company,
             out_dir=DOWNLOADS_DIR,
-            emit=emit_progress,
+            emit=emit,
         )
 
         job["status"]   = "done"
