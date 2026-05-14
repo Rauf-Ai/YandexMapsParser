@@ -450,54 +450,93 @@ def _scrape_page(query: str, page: int) -> list[dict]:
 # Collect
 # ---------------------------------------------------------------------------
 def collect(query: str, max_companies: int = 100,
-            emit=None) -> list[dict]:
+            emit=None, filter_fn=None) -> list[dict]:
+    """
+    Collect companies for query.
+
+    filter_fn — optional callable(company) → bool.
+    When provided, keeps searching until max_companies PASS the filter,
+    up to a hard cap of min(max_companies * 8, 400) total fetched.
+    Returns only companies that pass the filter (up to max_companies).
+    Without filter_fn returns all collected companies.
+    """
     def _emit(event, **kw):
         if emit:
             emit(event, **kw)
 
-    companies: list[dict] = []
-    seen: set[tuple]      = set()
-    skip, page, streak    = 0, 1, 0
+    # When filter active we may need to scan many more raw results
+    hard_cap = min(max_companies * 8, 400) if filter_fn else max_companies
 
-    while len(companies) < max_companies:
-        _emit("progress", found=len(companies), total=max_companies,
-              message=f"Поиск результатов {skip + 1}–{skip + 10}…")
+    all_seen:    set[tuple] = set()
+    all_fetched: list[dict] = []   # every company before filter
+    passed:      list[dict] = []   # companies that pass filter_fn
+    skip, page, streak = 0, 1, 0
+
+    def _target_reached():
+        if filter_fn:
+            return len(passed) >= max_companies
+        return len(all_fetched) >= max_companies
+
+    while not _target_reached():
+        if len(all_fetched) >= hard_cap:
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
+                  message="Достигнут лимит проверенных компаний.")
+            break
+
+        _emit("progress",
+              found=len(passed) if filter_fn else len(all_fetched),
+              total=max_companies,
+              message=f"Поиск результатов {skip + 1}–{skip + 10}…"
+                      + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
 
         feats = _search_page(query, skip)
         batch = [_parse_feature(f) for f in feats]
 
         if not batch:
-            _emit("progress", found=len(companies), total=max_companies,
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
                   message=f"API пустой, HTML fallback (стр. {page})…")
             batch = _scrape_page(query, page)
 
         if not batch:
             streak += 1
             if streak >= 3:
-                _emit("progress", found=len(companies), total=max_companies,
-                      message="Результаты закончились.")
+                _emit("progress",
+                      found=len(passed) if filter_fn else len(all_fetched),
+                      total=max_companies,
+                      message="Яндекс больше не отдаёт результаты.")
                 break
         else:
             streak = 0
 
         for c in batch:
             key = _dedup_key(c)
-            if key in seen:
+            if key in all_seen:
                 continue
-            seen.add(key)
-            _emit("progress", found=len(companies), total=max_companies,
+            all_seen.add(key)
+
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
                   message=f"Обогащаем: {c['name'][:40]}…")
             c = _enrich(c)
             _sleep(0.4, 1.2)
-            companies.append(c)
-            if len(companies) >= max_companies:
+            all_fetched.append(c)
+
+            if filter_fn:
+                if filter_fn(c):
+                    passed.append(c)
+            if _target_reached() or len(all_fetched) >= hard_cap:
                 break
 
         skip += 10
         page += 1
         _sleep(0.8, 2.0)
 
-    return companies
+    return passed if filter_fn else all_fetched
 
 # ---------------------------------------------------------------------------
 # Filters

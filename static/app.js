@@ -208,6 +208,15 @@ function renderResult(d) {
   $("downloadBtn").href      = `/api/download/${encodeURIComponent(d.filename)}`;
   $("downloadBtn").setAttribute("download", d.filename);
 
+  // Show soft warning when filter limited results
+  const warnEl = $("resultWarning");
+  if (d.warning) {
+    warnEl.textContent = "⚠ " + d.warning;
+    warnEl.style.display = "";
+  } else {
+    warnEl.style.display = "none";
+  }
+
   $("statsGrid").innerHTML = `
     <div class="stat-card">
       <div class="stat-value">${d.total}</div>

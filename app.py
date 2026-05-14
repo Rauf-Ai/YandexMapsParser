@@ -116,25 +116,55 @@ def _run_job(job_id: str, query: str, max_companies: int,
     try:
         emit("start", message=f"Начинаем сбор: «{query}»")
 
-        companies = collect(query, max_companies, emit=emit)
+        # Build filter function so collect() can keep searching until
+        # enough companies PASS the filter, not just stop at N total.
+        no_site   = filters.get("no_site",   False)
+        no_social = filters.get("no_social", False)
+        no_phone  = filters.get("no_phone",  False)
+        active_filters = [no_site, no_social, no_phone]
+
+        if any(active_filters):
+            def filter_fn(c):
+                if no_site   and c.get("has_site") != "Нет": return False
+                if no_social and c.get("social")   != "—":   return False
+                if no_phone  and c.get("phone")    != "—":   return False
+                return True
+        else:
+            filter_fn = None
+
+        companies = collect(query, max_companies, emit=emit,
+                            filter_fn=filter_fn)
 
         if not companies:
-            emit("error", message="Не удалось собрать ни одной компании.")
+            # Nothing at all — might be API issue or super-strict filter
+            filter_tips = []
+            if no_site:   filter_tips.append("«без сайта»")
+            if no_social: filter_tips.append("«без соцсетей»")
+            if no_phone:  filter_tips.append("«без телефона»")
+
+            if filter_tips:
+                msg = (f"По запросу «{query}» не найдено компаний "
+                       f"с фильтром {', '.join(filter_tips)}. "
+                       f"Попробуйте снять фильтр или изменить запрос.")
+            else:
+                msg = f"По запросу «{query}» ничего не найдено. Проверьте запрос."
+            emit("error", message=msg)
             job["status"] = "error"
             return
 
-        # Apply filters
-        filtered = apply_filters(
-            companies,
-            no_site=filters.get("no_site", False),
-            no_social=filters.get("no_social", False),
-            no_phone=filters.get("no_phone", False),
-        )
+        # Soft warning when fewer results than requested
+        warning = ""
+        if len(companies) < max_companies and any(active_filters):
+            filter_names = []
+            if no_site:   filter_names.append("без сайта")
+            if no_social: filter_names.append("без соцсетей")
+            if no_phone:  filter_names.append("без телефона")
+            warning = (f"Найдено {len(companies)} из {max_companies} "
+                       f"(фильтр «{', '.join(filter_names)}» ограничил результаты)")
+            emit("progress", found=len(companies), total=max_companies,
+                 message=f"⚠ {warning}")
 
-        if not filtered:
-            emit("error", message="После фильтрации не осталось компаний.")
-            job["status"] = "error"
-            return
+        filtered = companies   # already filtered by collect()
 
         emit("progress", found=len(filtered), total=max_companies,
              message="Формируем Excel-файл…")
@@ -173,6 +203,7 @@ def _run_job(job_id: str, query: str, max_companies: int,
         emit("done",
              filename=filename,
              total=total,
+             warning=warning,
              with_site=with_site,
              without_site=total - with_site,
              with_phone=with_phone,
