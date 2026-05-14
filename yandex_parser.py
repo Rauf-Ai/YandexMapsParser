@@ -22,6 +22,7 @@ from bs4 import BeautifulSoup
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import MultiCellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 
 logging.basicConfig(
@@ -561,7 +562,7 @@ def _add_filter(ws, n: int):
 
 def _add_dv(ws, n: int):
     dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
-    dv.sqref = f"K2:K{n + 1}"
+    dv.sqref = MultiCellRange(f"K2:K{n + 1}")
     ws.add_data_validation(dv)
 
 

@@ -17,6 +17,7 @@ from flask import Flask, Response, jsonify, render_template, request, send_file
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import MultiCellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 
 from yandex_parser import COLUMNS, collect
@@ -69,7 +70,7 @@ def _export_to_path(companies: list[dict], filepath: Path):
 
     def add_dv(ws, n):
         dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
-        dv.sqref = f"K2:K{n + 1}"
+        dv.sqref = MultiCellRange(f"K2:K{n + 1}")
         ws.add_data_validation(dv)
 
     def set_widths(ws):
