@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Яндекс Карты — Парсер</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+  <!-- Header -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="logo">
+        <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+          <circle cx="14" cy="14" r="14" fill="#FC3F1D"/>
+          <path d="M15.8 7H12.5C10.3 7 8.5 8.8 8.5 11c0 2 1.3 3.3 3.2 4.4L8 21h2.8l3.4-5.2h.1V21h2.5V7h-.9zm-2.6 7.1c-1.4-.8-2.2-1.8-2.2-3.1 0-1.2.9-2.1 2.1-2.1h.6v5.2h-.5z" fill="white"/>
+        </svg>
+        <span>Парсер карт</span>
+      </div>
+      <nav class="nav-hint">Яндекс Карты → Excel</nav>
+    </div>
+  </header>
+
+  <main class="main">
+    <!-- Search Card -->
+    <section class="card search-card" id="searchSection">
+      <h1 class="card-title">Сбор компаний с Яндекс Карт</h1>
+      <p class="card-sub">Введите запрос — получите структурированный Excel-файл со всеми контактами</p>
+
+      <form id="searchForm" class="search-form" autocomplete="off">
+        <div class="field-group">
+          <label class="field-label" for="queryInput">Поисковый запрос</label>
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <input id="queryInput" class="input" type="text"
+                   placeholder="Например: рестораны Казань, автосервис Москва"
+                   required maxlength="200"/>
+          </div>
+        </div>
+
+        <div class="field-group field-group--half">
+          <label class="field-label" for="maxInput">Кол-во компаний</label>
+          <input id="maxInput" class="input" type="number"
+                 min="1" max="500" value="50" step="1"/>
+        </div>
+
+        <div class="examples">
+          <span class="examples-label">Примеры:</span>
+          <button type="button" class="chip" data-q="рестораны Казань">рестораны Казань</button>
+          <button type="button" class="chip" data-q="автосервис Москва">автосервис Москва</button>
+          <button type="button" class="chip" data-q="стоматология Санкт-Петербург">стоматология СПб</button>
+          <button type="button" class="chip" data-q="фитнес Новосибирск">фитнес Новосибирск</button>
+        </div>
+
+        <button class="btn-primary" type="submit" id="startBtn">
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M4 9h10M9 4l5 5-5 5" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Начать сбор
+        </button>
+      </form>
+    </section>
+
+    <!-- Progress Card -->
+    <section class="card progress-card hidden" id="progressSection">
+      <div class="progress-header">
+        <div class="pulse-dot" id="pulseDot"></div>
+        <span class="progress-title" id="progressTitle">Идёт сбор данных…</span>
+        <button class="btn-ghost btn-sm" id="cancelBtn" title="Отмена">✕</button>
+      </div>
+
+      <div class="progress-track">
+        <div class="progress-bar" id="progressBar"></div>
+      </div>
+      <div class="progress-meta">
+        <span id="progressFound">Найдено: 0</span>
+        <span id="progressPct">0%</span>
+      </div>
+
+      <div class="log-box" id="logBox"></div>
+    </section>
+
+    <!-- Result Card -->
+    <section class="card result-card hidden" id="resultSection">
+      <div class="result-top">
+        <div class="result-icon">✓</div>
+        <div>
+          <h2 class="result-title">Готово!</h2>
+          <p class="result-sub" id="resultSub">Данные собраны и сохранены в Excel</p>
+        </div>
+      </div>
+
+      <!-- Stats grid -->
+      <div class="stats-grid" id="statsGrid"></div>
+
+      <!-- Preview table -->
+      <div class="preview-wrap">
+        <h3 class="preview-heading">Предпросмотр (первые строки)</h3>
+        <div class="table-scroll">
+          <table class="preview-table" id="previewTable">
+            <thead>
+              <tr>
+                <th>Название</th>
+                <th>Телефон</th>
+                <th>Адрес</th>
+                <th>Рейтинг</th>
+                <th>Сайт</th>
+              </tr>
+            </thead>
+            <tbody id="previewBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="result-actions">
+        <a class="btn-primary" id="downloadBtn" href="#" download>
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+            <path d="M9 3v8M5 8l4 4 4-4" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 14h12" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          Скачать Excel
+        </a>
+        <button class="btn-secondary" id="newSearchBtn">
+          Новый поиск
+        </button>
+      </div>
+    </section>
+
+    <!-- Error Card -->
+    <section class="card error-card hidden" id="errorSection">
+      <div class="error-icon">!</div>
+      <h2 class="error-title">Ошибка</h2>
+      <p class="error-msg" id="errorMsg"></p>
+      <button class="btn-secondary" id="errorRetryBtn">Попробовать снова</button>
+    </section>
+  </main>
+
+  <footer class="footer">
+    Яндекс Карты Парсер · Python + Flask + openpyxl
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
