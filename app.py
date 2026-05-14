@@ -1,4 +1,5 @@
 """Flask web interface — Yandex Maps Parser"""
+from __future__ import annotations
 
 import json
 import logging
