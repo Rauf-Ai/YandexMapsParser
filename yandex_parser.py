@@ -1,10 +1,5 @@
 """
-Yandex Maps Parser
-Extracts company data from Yandex Maps and exports to Excel.
-
-Strategy:
-  1. Yandex Search Maps API  — batch search (name, phone, address, coords, category)
-  2. Per-org detail request  — full card (website, socials, rating, reviews)
+Yandex Maps Parser — core logic
 """
 
 import argparse
@@ -14,8 +9,9 @@ import random
 import re
 import sys
 import time
+from collections import OrderedDict
 from datetime import date
-from urllib.parse import quote, urlencode
+from urllib.parse import quote
 
 import requests
 from bs4 import BeautifulSoup
@@ -35,7 +31,6 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # HTTP session
 # ---------------------------------------------------------------------------
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -43,17 +38,38 @@ HEADERS = {
         "Chrome/124.0.0.0 Safari/537.36"
     ),
     "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept": "application/json, text/javascript, */*; q=0.01",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": "https://yandex.ru/maps/",
 }
-
 SESSION = requests.Session()
 SESSION.headers.update(HEADERS)
 
 # ---------------------------------------------------------------------------
-# Constants
+# Column definitions  (key → (header, width))
 # ---------------------------------------------------------------------------
+ALL_FIELD_DEFS: OrderedDict = OrderedDict([
+    ("name",     ("Название",        30)),
+    ("phone",    ("Телефон",         22)),
+    ("site",     ("Сайт",            28)),
+    ("social",   ("Социальные сети", 30)),
+    ("address",  ("Адрес",           40)),
+    ("lat",      ("Широта",          14)),
+    ("lon",      ("Долгота",         14)),
+    ("category", ("Категория",       25)),
+    ("rating",   ("Рейтинг",         10)),
+    ("reviews",  ("Кол-во отзывов",  16)),
+    ("has_site", ("Есть сайт",       12)),
+    ("map_url",  ("Ссылка на карты", 36)),
+])
 
+DEFAULT_FIELDS = list(ALL_FIELD_DEFS.keys())
+
+# Legacy alias expected by app.py
+COLUMNS = [(v[0], v[1]) for v in ALL_FIELD_DEFS.values()]
+
+# ---------------------------------------------------------------------------
+# API
+# ---------------------------------------------------------------------------
 SEARCH_API     = "https://search-maps.yandex.ru/v1/"
 SEARCH_API_KEY = "dda3ddba-c9ea-4ead-9010-f43fbc15c6e3"
 
@@ -72,10 +88,8 @@ SOCIAL_DOMAINS = (
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def _sleep(lo: float = 0.8, hi: float = 2.0):
+def _sleep(lo=0.8, hi=2.0):
     time.sleep(random.uniform(lo, hi))
-
 
 def _fmt_phone(raw: str) -> str:
     digits = re.sub(r"\D", "", raw)
@@ -85,31 +99,24 @@ def _fmt_phone(raw: str) -> str:
         return f"+7 ({digits[1:4]}) {digits[4:7]}-{digits[7:9]}-{digits[9:11]}"
     return raw.strip()
 
-
 def _clean_site(url: str) -> str:
     url = re.sub(r"^https?://", "", url.strip())
     return url.rstrip("/")
 
-
 def _is_social(url: str) -> bool:
     return any(d in url for d in SOCIAL_DOMAINS)
 
+def _dedup_key(c: dict) -> tuple:
+    return (c.get("name", "").lower(), c.get("address", "").lower())
 
-def _dedup_key(company: dict) -> tuple:
-    return (company.get("name", "").lower(), company.get("address", "").lower())
-
-
-def _extract_oid(uri: str) -> str | None:
-    """Extract org ID from ymapsbm1://org?oid=12345"""
+def _extract_oid(uri: str) -> str:
     m = re.search(r"oid=(\d+)", uri or "")
-    return m.group(1) if m else None
+    return m.group(1) if m else ""
 
 # ---------------------------------------------------------------------------
-# Step 1 — Search API (batch, basic fields)
+# Step 1 — Search API
 # ---------------------------------------------------------------------------
-
 def _search_page(query: str, skip: int) -> list[dict]:
-    """Return list of raw feature dicts from Yandex Search Maps API."""
     params = {
         "apikey": SEARCH_API_KEY,
         "text": query,
@@ -126,9 +133,7 @@ def _search_page(query: str, skip: int) -> list[dict]:
         log.warning("Search API skip=%d: %s", skip, exc)
         return []
 
-
 def _parse_feature(feat: dict) -> dict:
-    """Parse a GeoJSON feature into a company dict (basic fields only)."""
     props = feat.get("properties", {})
     geo   = feat.get("geometry", {})
 
@@ -143,45 +148,59 @@ def _parse_feature(feat: dict) -> dict:
     address  = meta.get("address", "—")
     cats     = meta.get("Categories", [])
     category = cats[0].get("name", "—") if cats else "—"
-    oid      = _extract_oid(props.get("uri", "")) or meta.get("id", "")
+    oid      = _extract_oid(props.get("uri", "")) or str(meta.get("id", ""))
 
-    phones = [
-        _fmt_phone(p.get("formatted", ""))
-        for p in meta.get("Phones", [])
-        if p.get("formatted")
-    ]
+    phones = [_fmt_phone(p["formatted"]) for p in meta.get("Phones", [])
+              if p.get("formatted")]
     phone_str = ", ".join(phones) if phones else "—"
 
-    # --- Rating (correct API paths) ---
-    rating_obj = meta.get("rating") or {}
-    # API returns {"ratings": 4.5, "reviews": 150}  or  {"score": 4.5, "count": 150}
-    rating_raw  = (rating_obj.get("ratings") or rating_obj.get("score")
-                   or rating_obj.get("value"))
-    reviews_raw = (rating_obj.get("reviews") or rating_obj.get("count") or 0)
+    # Rating — try several known API field paths
+    rating, reviews = "—", 0
+    for path in [
+        lambda m: m.get("rating") or {},
+        lambda m: m.get("Siren", {}).get("Reviews", {}),
+    ]:
+        obj = path(meta)
+        r_val = (obj.get("ratings") or obj.get("score")
+                 or obj.get("value") or obj.get("rating"))
+        rv_val = obj.get("reviews") or obj.get("count") or 0
+        if r_val:
+            try:
+                rating  = round(float(r_val), 1)
+                reviews = int(rv_val) if rv_val else 0
+                break
+            except (TypeError, ValueError):
+                pass
 
-    try:
-        rating = round(float(rating_raw), 1)
-    except (TypeError, ValueError):
-        rating = "—"
-    try:
-        reviews = int(reviews_raw)
-    except (TypeError, ValueError):
-        reviews = 0
+    # Also check top-level properties
+    if rating == "—":
+        top_r = props.get("rating") or {}
+        r_val = top_r.get("ratings") or top_r.get("score")
+        if r_val:
+            try:
+                rating  = round(float(r_val), 1)
+                reviews = int(top_r.get("reviews") or top_r.get("count") or 0)
+            except (TypeError, ValueError):
+                pass
 
-    # --- Website & socials (from API Links) ---
-    site    = meta.get("url", "") or ""          # sometimes a top-level field
+    # Website & socials
+    site    = meta.get("url", "") or ""
     socials : list[str] = []
-
     for link in meta.get("Links", []):
         href = (link.get("href") or link.get("url") or "").strip()
         if not href:
             continue
         if _is_social(href):
-            socials.append(_clean_site(href))
+            c = _clean_site(href)
+            if c not in socials:
+                socials.append(c)
         elif not site:
             site = href
 
     site = _clean_site(site) if site else "—"
+
+    map_url = (f"https://yandex.ru/maps/org/{oid}/" if oid
+               else f"https://yandex.ru/maps/?text={quote(name + ' ' + address)}")
 
     return {
         "oid":      oid,
@@ -196,398 +215,371 @@ def _parse_feature(feat: dict) -> dict:
         "rating":   rating,
         "reviews":  reviews,
         "has_site": "Да" if site != "—" else "Нет",
+        "map_url":  map_url,
     }
 
 # ---------------------------------------------------------------------------
-# Step 2 — Per-org enrichment (full card: site, socials, rating, reviews)
+# Step 2 — Per-org enrichment (JSON-LD + itemprop + HTML fallback)
 # ---------------------------------------------------------------------------
-
 def _enrich(company: dict) -> dict:
-    """
-    Fetch the org's Yandex Maps page and extract missing fields.
-    Yandex embeds JSON state in the HTML that contains full business details.
-    """
     oid = company.get("oid", "")
     if not oid:
         return company
 
-    needs_site    = company["site"]    == "—"
-    needs_social  = company["social"]  == "—"
-    needs_rating  = company["rating"]  == "—"
-    needs_reviews = company["reviews"] == 0
+    ns  = company["site"]    == "—"
+    nso = company["social"]  == "—"
+    nr  = company["rating"]  == "—"
+    nrv = company["reviews"] == 0
 
-    if not any([needs_site, needs_social, needs_rating, needs_reviews]):
-        return company  # already complete
+    if not any([ns, nso, nr, nrv]):
+        return company
 
-    url = f"https://yandex.ru/maps/org/{oid}/"
     try:
-        resp = SESSION.get(url, timeout=15)
+        resp = SESSION.get(f"https://yandex.ru/maps/org/{oid}/", timeout=15)
         if resp.status_code != 200:
             return company
         html = resp.text
     except Exception as exc:
-        log.debug("Enrich %s failed: %s", oid, exc)
+        log.debug("Enrich %s: %s", oid, exc)
         return company
 
-    # --- Try to parse embedded JSON blobs ---
-    # Yandex Maps embeds full org data in <script> tags as JSON
-    json_blobs: list[dict] = []
+    soup = BeautifulSoup(html, "html.parser")
 
-    # Pattern 1: window.__data = {...}
-    for m in re.finditer(r'window\.__(?:data|reduxState|REDUX_STATE__)\s*=\s*(\{.{50,})', html):
+    # ── 1. JSON-LD  (most reliable — served for SEO) ──────────────────────
+    for tag in soup.find_all("script", type="application/ld+json"):
         try:
-            raw = _balanced_json(m.group(1))
-            json_blobs.append(json.loads(raw))
-        except Exception:
-            pass
+            data = json.loads(tag.string or "")
+        except (json.JSONDecodeError, AttributeError):
+            continue
+        _apply_jsonld(company, data)
+        ns  = company["site"]    == "—"
+        nso = company["social"]  == "—"
+        nr  = company["rating"]  == "—"
+        nrv = company["reviews"] == 0
 
-    # Pattern 2: <script type="application/json">...</script>
-    for tag in re.findall(r'<script[^>]*type="application/json"[^>]*>(.*?)</script>', html, re.DOTALL):
-        try:
-            json_blobs.append(json.loads(tag))
-        except Exception:
-            pass
+    # ── 2. itemprop / schema.org attributes ───────────────────────────────
+    if nr:
+        el = soup.find(itemprop="ratingValue")
+        if el:
+            try:
+                company["rating"] = round(float(
+                    (el.get("content") or el.get_text()).replace(",", ".")), 1)
+                nr = False
+            except ValueError:
+                pass
 
-    # Collect all string values from JSON blobs to find URLs
-    flat_text = " ".join(_flatten_strings(b) for b in json_blobs) if json_blobs else html
+    if nrv:
+        el = (soup.find(itemprop="reviewCount") or
+              soup.find(itemprop="ratingCount"))
+        if el:
+            try:
+                v = int(re.sub(r"\D", "",
+                               el.get("content") or el.get_text()))
+                if v > 0:
+                    company["reviews"] = v
+                    nrv = False
+            except ValueError:
+                pass
 
-    # --- Extract rating ---
-    if needs_rating:
-        for pat in [
-            r'"rating"\s*:\s*\{[^}]*?"value"\s*:\s*([\d.]+)',
-            r'"ratingValue"\s*:\s*([\d.]+)',
-            r'"averageRating"\s*:\s*([\d.]+)',
-            r'"score"\s*:\s*([\d.]+)',
-        ]:
-            m = re.search(pat, flat_text)
-            if m:
-                try:
-                    company["rating"] = round(float(m.group(1)), 1)
-                    needs_rating = False
-                    break
-                except ValueError:
-                    pass
+    if ns:
+        el = soup.find(itemprop="url")
+        if el:
+            href = el.get("href", "") or el.get("content", "")
+            if href and not _is_social(href) and "yandex" not in href:
+                company["site"]     = _clean_site(href)
+                company["has_site"] = "Да"
+                ns = False
 
-    # --- Extract review count ---
-    if needs_reviews:
-        for pat in [
-            r'"reviewCount"\s*:\s*(\d+)',
-            r'"reviews"\s*:\s*(\d+)',
-            r'"ratingsCount"\s*:\s*(\d+)',
-            r'"count"\s*:\s*(\d+)',
-        ]:
-            m = re.search(pat, flat_text)
-            if m:
-                try:
-                    v = int(m.group(1))
-                    if v > 0:
-                        company["reviews"] = v
-                        needs_reviews = False
-                        break
-                except ValueError:
-                    pass
-
-    # --- Extract website ---
-    if needs_site:
-        for pat in [
-            r'"siteUrl"\s*:\s*"(https?://[^"]{4,})"',
-            r'"url"\s*:\s*"(https?://(?!yandex\.|maps\.)[^"]{4,})"',
-            r'"website"\s*:\s*"(https?://[^"]{4,})"',
-        ]:
-            m = re.search(pat, flat_text)
-            if m:
-                candidate = m.group(1)
-                if not _is_social(candidate) and "yandex" not in candidate:
-                    company["site"]     = _clean_site(candidate)
-                    company["has_site"] = "Да"
-                    needs_site = False
-                    break
-
-    # --- Extract socials ---
-    if needs_social:
+    # ── 3. All <a href> for socials ───────────────────────────────────────
+    if nso:
         found: list[str] = []
-        for pat in [r'"(https?://(?:' + '|'.join(re.escape(d) for d in SOCIAL_DOMAINS) + r')[^"]*)"']:
-            for m in re.finditer(pat, flat_text):
-                link = _clean_site(m.group(1))
-                if link not in found:
-                    found.append(link)
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            if _is_social(href):
+                c = _clean_site(href)
+                if c not in found:
+                    found.append(c)
         if found:
             company["social"] = ", ".join(found)
+            nso = False
 
-    # --- Fallback: parse visible HTML for rating / review badge ---
-    if needs_rating or needs_reviews:
-        soup = BeautifulSoup(html, "html.parser")
-        if needs_rating:
-            el = (soup.select_one(".business-rating-badge-view__rating") or
-                  soup.select_one("[class*='rating__value']") or
-                  soup.select_one("[itemprop='ratingValue']"))
+    # ── 4. CSS class selectors as last resort ─────────────────────────────
+    if nr:
+        for sel in [".business-rating-badge-view__rating",
+                    "[class*='rating__value']", ".business-rating__value"]:
+            el = soup.select_one(sel)
             if el:
                 try:
                     company["rating"] = round(float(
-                        el.get("content") or el.get_text(strip=True).replace(",", ".")
-                    ), 1)
+                        el.get_text(strip=True).replace(",", ".")), 1)
+                    break
                 except ValueError:
                     pass
-        if needs_reviews:
-            el = (soup.select_one(".business-rating-badge-view__count") or
-                  soup.select_one("[class*='rating__count']") or
-                  soup.select_one("[itemprop='reviewCount']"))
+
+    if nrv:
+        for sel in [".business-rating-badge-view__count",
+                    "[class*='rating__count']"]:
+            el = soup.select_one(sel)
             if el:
                 try:
-                    v = int(re.sub(r"\D", "", el.get("content") or el.get_text()))
+                    v = int(re.sub(r"\D", "", el.get_text()))
                     if v > 0:
                         company["reviews"] = v
+                        break
                 except ValueError:
                     pass
 
     return company
 
 
-def _balanced_json(s: str, max_len: int = 200_000) -> str:
-    """Extract a balanced {...} JSON object from the start of s."""
-    depth = 0
-    in_str = False
-    escape = False
-    for i, ch in enumerate(s[:max_len]):
-        if escape:
-            escape = False
-            continue
-        if ch == "\\" and in_str:
-            escape = True
-            continue
-        if ch == '"':
-            in_str = not in_str
-            continue
-        if in_str:
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return s[:i + 1]
-    return s
+def _apply_jsonld(company: dict, data):
+    """Recursively apply JSON-LD data to company dict."""
+    if isinstance(data, list):
+        for item in data:
+            _apply_jsonld(company, item)
+        return
+    if not isinstance(data, dict):
+        return
 
+    # rating
+    ar = data.get("aggregateRating") or {}
+    if isinstance(ar, dict):
+        rv = ar.get("ratingValue")
+        rc = ar.get("reviewCount") or ar.get("ratingCount")
+        if rv and company["rating"] == "—":
+            try:
+                company["rating"] = round(float(str(rv).replace(",", ".")), 1)
+            except ValueError:
+                pass
+        if rc and company["reviews"] == 0:
+            try:
+                v = int(re.sub(r"\D", "", str(rc)))
+                if v > 0:
+                    company["reviews"] = v
+            except ValueError:
+                pass
 
-def _flatten_strings(obj, acc: list | None = None) -> str:
-    """Recursively collect all string values from a nested dict/list."""
-    if acc is None:
-        acc = []
-    if isinstance(obj, str):
-        acc.append(obj)
-    elif isinstance(obj, dict):
-        for v in obj.values():
-            _flatten_strings(v, acc)
-    elif isinstance(obj, list):
-        for v in obj:
-            _flatten_strings(v, acc)
-    return " ".join(acc)
+    # url
+    if company["site"] == "—":
+        url = data.get("url") or data.get("website") or ""
+        if (isinstance(url, str) and url.startswith("http")
+                and not _is_social(url) and "yandex" not in url):
+            company["site"]     = _clean_site(url)
+            company["has_site"] = "Да"
+
+    # sameAs → socials
+    same = data.get("sameAs") or []
+    if isinstance(same, str):
+        same = [same]
+    new_s: list[str] = []
+    for link in same:
+        if isinstance(link, str) and _is_social(link):
+            c = _clean_site(link)
+            if c not in new_s:
+                new_s.append(c)
+    if new_s:
+        existing = company["social"]
+        if existing == "—":
+            company["social"] = ", ".join(new_s)
+        else:
+            ex_list = existing.split(", ")
+            for s in new_s:
+                if s not in ex_list:
+                    ex_list.append(s)
+            company["social"] = ", ".join(ex_list)
+
+    # recurse into nested @graph
+    for v in data.values():
+        if isinstance(v, (dict, list)):
+            _apply_jsonld(company, v)
 
 # ---------------------------------------------------------------------------
-# Fallback: HTML search scraper
+# HTML fallback scraper
 # ---------------------------------------------------------------------------
-
 def _scrape_page(query: str, page: int) -> list[dict]:
-    """HTML fallback when Search API returns nothing."""
     url = f"https://yandex.ru/maps/?text={quote(query)}&page={page}"
     try:
         resp = SESSION.get(url, timeout=15)
         resp.raise_for_status()
     except Exception as exc:
-        log.warning("HTML page %d failed: %s", page, exc)
+        log.warning("HTML page %d: %s", page, exc)
         return []
 
     soup = BeautifulSoup(resp.text, "html.parser")
-    items = soup.select("li.search-list-item")
     companies = []
-    for item in items:
+    for item in soup.select("li.search-list-item"):
         def txt(sel):
             el = item.select_one(sel)
             return el.get_text(strip=True) if el else "—"
 
-        name    = txt(".search-business-snippet-view__title")
-        address = txt(".search-business-snippet-view__address")
-        category= txt(".search-business-snippet-view__category")
+        name     = txt(".search-business-snippet-view__title")
+        address  = txt(".search-business-snippet-view__address")
+        category = txt(".search-business-snippet-view__category")
+
         try:
             rating = round(float(
-                txt(".business-rating-badge-view__rating").replace(",", ".")
-            ), 1)
+                txt(".business-rating-badge-view__rating").replace(",", ".")), 1)
         except ValueError:
             rating = "—"
         try:
-            reviews = int(re.sub(r"\D", "", txt(".business-rating-badge-view__count")))
+            reviews = int(re.sub(r"\D", "",
+                                 txt(".business-rating-badge-view__count")))
         except ValueError:
             reviews = 0
 
-        # Try to extract oid from data attributes
         oid = ""
         for attr in ("data-permalink", "data-uri"):
-            val = item.get(attr, "")
-            m = re.search(r"(\d{10,})", val)
+            m = re.search(r"(\d{10,})", item.get(attr, ""))
             if m:
                 oid = m.group(1)
                 break
+
+        map_url = (f"https://yandex.ru/maps/org/{oid}/" if oid
+                   else f"https://yandex.ru/maps/?text={quote(name + ' ' + address)}")
 
         companies.append({
             "oid": oid, "name": name, "phone": "—",
             "site": "—", "social": "—", "address": address,
             "lat": "—", "lon": "—", "category": category,
-            "rating": rating, "reviews": reviews, "has_site": "Нет",
+            "rating": rating, "reviews": reviews,
+            "has_site": "Нет", "map_url": map_url,
         })
     return companies
 
 # ---------------------------------------------------------------------------
-# Main collection loop
+# Collect
 # ---------------------------------------------------------------------------
-
 def collect(query: str, max_companies: int = 100,
             emit=None) -> list[dict]:
-    """
-    Collect companies for query.
-    emit(event, **kw) — optional callback for progress events (used by web UI).
-    """
     def _emit(event, **kw):
         if emit:
             emit(event, **kw)
 
     companies: list[dict] = []
-    seen: set[tuple] = set()
-    skip = 0
-    page = 1
-    empty_streak = 0
+    seen: set[tuple]      = set()
+    skip, page, streak    = 0, 1, 0
 
     while len(companies) < max_companies:
-        _emit("progress",
-              found=len(companies), total=max_companies,
+        _emit("progress", found=len(companies), total=max_companies,
               message=f"Поиск результатов {skip + 1}–{skip + 10}…")
 
         feats = _search_page(query, skip)
         batch = [_parse_feature(f) for f in feats]
 
         if not batch:
-            log.warning("API skip=%d пустой, HTML fallback…", skip)
             _emit("progress", found=len(companies), total=max_companies,
-                  message=f"API не ответил, HTML fallback (стр. {page})…")
+                  message=f"API пустой, HTML fallback (стр. {page})…")
             batch = _scrape_page(query, page)
 
         if not batch:
-            empty_streak += 1
-            if empty_streak >= 3:
+            streak += 1
+            if streak >= 3:
                 _emit("progress", found=len(companies), total=max_companies,
                       message="Результаты закончились.")
                 break
         else:
-            empty_streak = 0
+            streak = 0
 
         for c in batch:
             key = _dedup_key(c)
             if key in seen:
                 continue
             seen.add(key)
-
-            # Enrich with per-org detail page
             _emit("progress", found=len(companies), total=max_companies,
-                  message=f"Загружаем карточку: {c['name'][:40]}…")
+                  message=f"Обогащаем: {c['name'][:40]}…")
             c = _enrich(c)
-            _sleep(0.5, 1.5)   # polite delay after detail request
-
+            _sleep(0.4, 1.2)
             companies.append(c)
             if len(companies) >= max_companies:
                 break
 
         skip += 10
         page += 1
-        _sleep(1.0, 2.5)   # delay between search pages
+        _sleep(0.8, 2.0)
 
     return companies
 
 # ---------------------------------------------------------------------------
-# Excel export
+# Filters
 # ---------------------------------------------------------------------------
+def apply_filters(companies: list[dict],
+                  no_site=False, no_social=False, no_phone=False) -> list[dict]:
+    result = companies
+    if no_site:
+        result = [c for c in result if c["has_site"] == "Нет"]
+    if no_social:
+        result = [c for c in result if c["social"] == "—"]
+    if no_phone:
+        result = [c for c in result if c["phone"] == "—"]
+    return result
 
-COLUMNS = [
-    ("Название",          30),
-    ("Телефон",           22),
-    ("Сайт",              28),
-    ("Социальные сети",   30),
-    ("Адрес",             40),
-    ("Широта",            14),
-    ("Долгота",           14),
-    ("Категория",         25),
-    ("Рейтинг",           10),
-    ("Кол-во отзывов",    16),
-    ("Есть сайт",         12),
-]
-
+# ---------------------------------------------------------------------------
+# Excel export  (dynamic columns)
+# ---------------------------------------------------------------------------
 HEADER_FILL = PatternFill("solid", fgColor="D9EAD3")
 HEADER_FONT = Font(bold=True)
 
 
-def _write_header(ws, row: int = 1):
-    for ci, (title, _) in enumerate(COLUMNS, 1):
-        cell = ws.cell(row, ci, title)
-        cell.fill = HEADER_FILL
-        cell.font = HEADER_FONT
-        cell.alignment = Alignment(horizontal="center", vertical="center")
+def _build_columns(selected: list[str]) -> list[tuple]:
+    """Return [(key, header, width), ...] for the selected fields."""
+    cols = []
+    for key in selected:
+        if key in ALL_FIELD_DEFS:
+            header, width = ALL_FIELD_DEFS[key]
+            cols.append((key, header, width))
+    return cols
 
 
-def _write_row(ws, ri: int, c: dict):
-    vals = [
-        c["name"], c["phone"], c["site"], c["social"], c["address"],
-        c["lat"]  if isinstance(c["lat"],  float) else None,
-        c["lon"]  if isinstance(c["lon"],  float) else None,
-        c["category"],
-        c["rating"]  if isinstance(c["rating"],  float) else None,
-        c["reviews"],
-        c["has_site"],
-    ]
-    for ci, v in enumerate(vals, 1):
-        cell = ws.cell(ri, ci, v)
-        if ci in (6, 7) and v is not None:
-            cell.number_format = "0.000000"
-        elif ci == 9 and v is not None:
-            cell.number_format = "0.0"
-        elif ci == 10:
-            cell.number_format = "0"
-
-
-def _set_widths(ws):
-    for ci, (_, w) in enumerate(COLUMNS, 1):
-        ws.column_dimensions[get_column_letter(ci)].width = w
-
-
-def _add_filter(ws, n: int):
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(COLUMNS))}{n + 1}"
-
-
-def _add_dv(ws, n: int):
-    if n == 0:
-        return
-    dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
-    dv.sqref = MultiCellRange(f"K2:K{n + 1}")
-    ws.add_data_validation(dv)
-
-
-def export_excel(companies: list[dict], query: str) -> str:
+def export_excel(companies: list[dict], query: str,
+                 selected_fields: list[str] | None = None) -> str:
+    cols = _build_columns(selected_fields or DEFAULT_FIELDS)
     wb = Workbook()
+
+    def _write_sheet(ws, rows):
+        # Header
+        for ci, (_, header, _) in enumerate(cols, 1):
+            cell = ws.cell(1, ci, header)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        # Rows
+        for ri, c in enumerate(rows, 2):
+            for ci, (key, _, _) in enumerate(cols, 1):
+                val = c.get(key)
+                if key in ("lat", "lon") and not isinstance(val, float):
+                    val = None
+                if key == "rating" and not isinstance(val, float):
+                    val = None
+                cell = ws.cell(ri, ci, val)
+                if key in ("lat", "lon") and val is not None:
+                    cell.number_format = "0.000000"
+                elif key == "rating" and val is not None:
+                    cell.number_format = "0.0"
+                elif key == "reviews":
+                    cell.number_format = "0"
+        # Widths
+        for ci, (_, _, width) in enumerate(cols, 1):
+            ws.column_dimensions[get_column_letter(ci)].width = width
+        # Autofilter
+        n = len(rows)
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{n + 1}"
+        # Dropdown for "has_site" column if present
+        if n > 0:
+            for ci, (key, _, _) in enumerate(cols, 1):
+                if key == "has_site":
+                    dv = DataValidation(
+                        type="list", formula1='"Да,Нет"', allow_blank=False)
+                    dv.sqref = MultiCellRange(f"{get_column_letter(ci)}2:"
+                                              f"{get_column_letter(ci)}{n + 1}")
+                    ws.add_data_validation(dv)
+                    break
 
     ws1 = wb.active
     ws1.title = "Компании"
-    _write_header(ws1)
-    for i, c in enumerate(companies, 2):
-        _write_row(ws1, i, c)
-    _set_widths(ws1)
-    _add_filter(ws1, len(companies))
-    _add_dv(ws1, len(companies))
+    _write_sheet(ws1, companies)
 
     ws2 = wb.create_sheet("Без сайта")
-    _write_header(ws2)
-    no_site = [c for c in companies if c["has_site"] == "Нет"]
-    for i, c in enumerate(no_site, 2):
-        _write_row(ws2, i, c)
-    _set_widths(ws2)
-    _add_filter(ws2, len(no_site))
-    _add_dv(ws2, len(no_site))
+    _write_sheet(ws2, [c for c in companies if c.get("has_site") == "Нет"])
 
     safe = re.sub(r"[^\w\-а-яА-Я]", "_", query)[:40]
     filename = f"yandex_maps_{safe}_{date.today()}.xlsx"
@@ -597,7 +589,6 @@ def export_excel(companies: list[dict], query: str) -> str:
 # ---------------------------------------------------------------------------
 # Statistics
 # ---------------------------------------------------------------------------
-
 def print_stats(companies: list[dict], filename: str):
     total      = len(companies)
     with_site  = sum(1 for c in companies if c["has_site"] == "Да")
@@ -618,16 +609,12 @@ def print_stats(companies: list[dict], filename: str):
     print("=" * 46)
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI
 # ---------------------------------------------------------------------------
-
 def main():
-    ap = argparse.ArgumentParser(
-        description="Парсер Яндекс Карт → Excel"
-    )
-    ap.add_argument("query", help='Запрос, например "стоматология Санкт-Петербург"')
-    ap.add_argument("-n", "--max", type=int, default=100, metavar="N",
-                    help="Лимит компаний (по умолчанию 100)")
+    ap = argparse.ArgumentParser(description="Парсер Яндекс Карт → Excel")
+    ap.add_argument("query")
+    ap.add_argument("-n", "--max", type=int, default=100, metavar="N")
     args = ap.parse_args()
 
     log.info("Запрос: «%s» | Лимит: %d", args.query, args.max)
