@@ -28,10 +28,11 @@ from yandex_parser import SESSION, _sleep
 
 log = logging.getLogger(__name__)
 
-# Yandex avatars CDN: match business/org photo URLs
+# Yandex avatars CDN: match business/org photo URLs.
+# Accepts any size suffix (orig, L, XL, XXL, or none) and more service prefixes.
 _PHOTO_RE = re.compile(
-    r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc)"
-    r"/\d+/[a-zA-Z0-9_\-]+/(?:orig|L|XL|XXL)",
+    r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc|orgs|geo)"
+    r"/\d+/[a-zA-Z0-9_\-]+(?:/(?:orig|L|XL|XXL|[a-zA-Z0-9]+))?",
     re.IGNORECASE,
 )
 
@@ -152,33 +153,78 @@ def _extract_org_details(soup, jsonld_blocks: list) -> dict:
 def _extract_photo_urls(html: str, max_photos: int = 20) -> list[str]:
     seen_keys: set[str] = set()
     urls: list[str] = []
-    for m in _PHOTO_RE.finditer(html):
-        url = re.sub(r"/(?:L|XL|XXL)$", "/orig", m.group(0))
+
+    def _add(raw: str):
+        if len(urls) >= max_photos:
+            return
+        # Normalise to largest size
+        url = re.sub(r"/(?:L|XL|XXL)(/|$)", "/orig\\1", raw)
+        if not url.endswith("/orig"):
+            url = url.rstrip("/") + "/orig"
         parts = url.rstrip("/").split("/")
+        # Dedup by the hash segment (2nd-to-last part)
         key = parts[-2] if len(parts) >= 2 else url
         if key not in seen_keys:
             seen_keys.add(key)
             urls.append(url)
-            if len(urls) >= max_photos:
-                break
+
+    for m in _PHOTO_RE.finditer(html):
+        _add(m.group(0))
+        if len(urls) >= max_photos:
+            break
     return urls
 
 
-def _extract_news(soup) -> list[dict]:
+def _extract_photo_urls_from_jsonld(jsonld_blocks: list) -> list[str]:
+    """Pull image URLs out of JSON-LD image / photo fields."""
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    def _collect(val):
+        if isinstance(val, str) and val.startswith("http") and val not in seen:
+            seen.add(val)
+            urls.append(val)
+        elif isinstance(val, dict):
+            _collect(val.get("url") or val.get("contentUrl", ""))
+        elif isinstance(val, list):
+            for v in val:
+                _collect(v)
+
+    for block in jsonld_blocks:
+        items = block if isinstance(block, list) else [block]
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            for entity in ([item] + (item.get("@graph") or [])):
+                if not isinstance(entity, dict):
+                    continue
+                _collect(entity.get("image"))
+                _collect(entity.get("photo"))
+                _collect(entity.get("primaryImageOfPage"))
+    return urls
+
+
+def _extract_news(soup, extra_html: str = "") -> list[dict]:
     news: list[dict] = []
     seen: set[str] = set()
-    for sel in [
-        "[class*='story-view__title']",
-        "[class*='promotion-view__title']",
-        "[class*='action-view__title']",
-        "[class*='news-view__title']",
-        "[class*='story-snippet__title']",
-    ]:
-        for el in soup.select(sel):
-            text = el.get_text(strip=True)
-            if text and len(text) > 5 and text not in seen:
-                seen.add(text)
-                news.append({"text": text[:500]})
+    soups = [soup]
+    if extra_html:
+        soups.append(BeautifulSoup(extra_html, "html.parser"))
+    for s in soups:
+        for sel in [
+            "[class*='story-view__title']",
+            "[class*='promotion-view__title']",
+            "[class*='action-view__title']",
+            "[class*='news-view__title']",
+            "[class*='story-snippet__title']",
+            "[class*='action-snippet__title']",
+            "[class*='promo']",
+        ]:
+            for el in s.select(sel):
+                text = el.get_text(strip=True)
+                if text and len(text) > 5 and text not in seen:
+                    seen.add(text)
+                    news.append({"text": text[:500]})
     return news[:20]
 
 
@@ -233,12 +279,45 @@ def collect_org_zip(
     # 4 ── Photo URLs ──────────────────────────────────────────────────
     _emit("Ищем фотографии…")
     photo_urls = _extract_photo_urls(html, max_photos)
+
+    # Supplement from JSON-LD image fields
+    if len(photo_urls) < max_photos:
+        for url in _extract_photo_urls_from_jsonld(jsonld):
+            if url not in photo_urls:
+                photo_urls.append(url)
+                if len(photo_urls) >= max_photos:
+                    break
+
+    # Try og:image meta tag
+    if len(photo_urls) < max_photos:
+        og = soup.find("meta", property="og:image")
+        if og:
+            og_url = og.get("content", "")
+            if og_url.startswith("http") and og_url not in photo_urls:
+                photo_urls.append(og_url)
+
+    # Fetch the /photos/ sub-page for additional CDN URLs
+    if len(photo_urls) < max_photos and oid:
+        _sleep(0.3, 0.6)
+        phresp = _fetch(f"https://yandex.ru/maps/org/{oid}/photos/")
+        if phresp:
+            extra = _extract_photo_urls(phresp.text, max_photos - len(photo_urls))
+            for url in extra:
+                if url not in photo_urls:
+                    photo_urls.append(url)
+
+    photo_urls = photo_urls[:max_photos]
     _emit(f"Фотографий найдено: {len(photo_urls)}")
 
     # 5 ── News / promotions ───────────────────────────────────────────
     _sleep(0.3, 0.5)
     _emit("Ищем акции…")
-    news = _extract_news(soup)
+    actions_html = ""
+    if oid:
+        ar = _fetch(f"https://yandex.ru/maps/org/{oid}/actions/")
+        if ar:
+            actions_html = ar.text
+    news = _extract_news(soup, actions_html)
     _emit(f"Акций/новостей: {len(news)}")
 
     # 6 ── Build full info dict ────────────────────────────────────────
@@ -445,6 +524,9 @@ Grid 2–4 колонки, все фото из папки `photos/`.
 ⚠️ Показывай только реальные — не выдумывай.
 
 **7. Акции** *(только если данные есть в разделе «Акции» выше)*
+> 💡 Сторис/акции на Яндекс Картах загружаются динамически и не всегда попадают в архив.
+> Если пользователь добавил скриншоты сторисов в папку `promo/` — учти их при создании секции акций.
+> Иначе используй только данные из `news.json`.
 
 **8. Контакты**
 - Адрес: {info['address']}

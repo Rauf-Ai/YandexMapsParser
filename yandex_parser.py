@@ -392,8 +392,12 @@ def _enrich(company: dict) -> dict:
     # ── 5. Товары и услуги ─────────────────────────────────────────────
     # NOTE: Yandex Maps renders services via React; static CSS selectors may
     # be empty — rely primarily on JSON-LD hasOfferCatalog (in _apply_jsonld).
-    # The section-heading fallback was removed because it captured navigation
-    # tabs ("Обзор") instead of real service names.
+    _SVC_BLACKLIST = {
+        "обзор", "фото", "отзывы", "условия", "информация",
+        "товары и услуги", "услуги", "контакты",
+        "колл-центр", "позвонить", "написать", "маршрут",
+        "поделиться", "записаться", "забронировать", "заказать",
+    }
     if not company.get("services"):
         for sel in [
             ".business-services-item-view__name",
@@ -401,25 +405,34 @@ def _enrich(company: dict) -> dict:
             ".card-feature-view__title",
         ]:
             items = [el.get_text(strip=True) for el in soup.select(sel)
-                     if el.get_text(strip=True) and len(el.get_text(strip=True)) < 80]
-            # Skip obvious navigation words that appear on every page
-            items = [x for x in items if x.lower() not in {
-                "обзор", "фото", "отзывы", "условия", "информация",
-                "товары и услуги", "услуги", "контакты",
-            }]
+                     if el.get_text(strip=True) and len(el.get_text(strip=True)) < 100]
+            items = [x for x in items if x.lower() not in _SVC_BLACKLIST]
             if items:
                 company["services"] = ", ".join(items[:25])
                 break
 
     # ── 6. Особенности ────────────────────────────────────────────────
+    # Only use narrow, proven selectors.  The broad [class*='business-feature']
+    # span selector matched price tables, category chips, and value spans
+    # ("доступно") from the accessibility block — removed entirely.
+    _FTR_VALUE_WORDS = {"доступно", "недоступно", "да", "нет", "yes", "no", "true", "false"}
     if not company.get("features"):
         for sel in [
             ".business-features-view__feature",
             "[class*='features-view__feature']",
-            "[class*='feature-item__text']",
-            "[class*='business-feature'] span",
         ]:
-            items = [el.get_text(strip=True) for el in soup.select(sel) if el.get_text(strip=True)]
+            items = []
+            for el in soup.select(sel):
+                t = el.get_text(strip=True)
+                if not t:
+                    continue
+                if "₽" in t or "руб" in t.lower():   # price item
+                    continue
+                if t.lower() in _FTR_VALUE_WORDS:      # bare value word
+                    continue
+                if len(t) > 70:                         # too long
+                    continue
+                items.append(t)
             if items:
                 company["features"] = ", ".join(items[:25])
                 break
@@ -564,17 +577,20 @@ def _apply_jsonld(company: dict, data):
     if not company.get("features"):
         amenity = data.get("amenityFeature") or []
         if isinstance(amenity, list):
+            _ftr_skip = {"false", "0", "no", "none", "", "недоступно"}
             values = []
             for a in amenity:
                 if not isinstance(a, dict):
                     continue
-                val = a.get("value")
-                name = a.get("name", "")
-                # Skip falsy values
-                if str(val).lower() in ("false", "0", "no", "none", ""):
+                val  = a.get("value")
+                name = a.get("name", "").strip()
+                if str(val).lower() in _ftr_skip:
                     continue
-                if name:
-                    values.append(name)
+                if not name or "₽" in name or "руб" in name.lower():
+                    continue
+                if len(name) > 70:
+                    continue
+                values.append(name)
             if values:
                 company["features"] = ", ".join(values[:25])
 
