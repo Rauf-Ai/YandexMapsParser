@@ -23,7 +23,7 @@ from flask import (
 )
 
 # Reuse core logic from parser.py
-from parser import (
+from yandex_parser import (
     COLUMNS,
     _dedup_key,
     _fmt_phone,
