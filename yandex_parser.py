@@ -48,20 +48,21 @@ SESSION.headers.update(HEADERS)
 # Column definitions  (key → (header, width))
 # ---------------------------------------------------------------------------
 ALL_FIELD_DEFS: OrderedDict = OrderedDict([
-    ("name",     ("Название",        30)),
-    ("phone",    ("Телефон",         22)),
-    ("site",     ("Сайт",            28)),
-    ("social",   ("Социальные сети", 30)),
-    ("address",  ("Адрес",           40)),
-    ("lat",      ("Широта",          14)),
-    ("lon",      ("Долгота",         14)),
-    ("category", ("Категория",       25)),
-    ("rating",   ("Рейтинг",         10)),
-    ("reviews",  ("Кол-во отзывов",  16)),
-    ("has_site", ("Есть сайт",       12)),
-    ("map_url",  ("Ссылка на карты", 36)),
-    ("services", ("Товары и услуги", 50)),
-    ("features", ("Особенности",     45)),
+    ("name",        ("Название",        30)),
+    ("phone",       ("Телефон",         22)),
+    ("site",        ("Сайт",            28)),
+    ("social",      ("Социальные сети", 30)),
+    ("address",     ("Адрес",           40)),
+    ("lat",         ("Широта",          14)),
+    ("lon",         ("Долгота",         14)),
+    ("category",    ("Категория",       25)),
+    ("rating",      ("Рейтинг",         10)),
+    ("reviews",     ("Кол-во отзывов",  16)),
+    ("has_site",    ("Есть сайт",       12)),
+    ("map_url",     ("Ссылка на карты", 36)),
+    ("services",    ("Товары и услуги", 50)),
+    ("features",    ("Особенности",     45)),
+    ("price_range", ("Цены",            22)),
 ])
 
 DEFAULT_FIELDS = list(ALL_FIELD_DEFS.keys())
@@ -251,8 +252,9 @@ def _parse_feature(feat: dict) -> dict:
         "reviews":  reviews,
         "has_site": "Да" if site != "—" else "Нет",
         "map_url":  map_url,
-        "services": "",
-        "features": "",
+        "services":    "",
+        "features":    "",
+        "price_range": "",
     }
 
 # ---------------------------------------------------------------------------
@@ -263,14 +265,15 @@ def _enrich(company: dict) -> dict:
     if not oid:
         return company
 
-    ns  = company["site"]    == "—"
-    nso = company["social"]  == "—"
-    nr  = company["rating"]  == "—"
-    nrv = company["reviews"] == 0
+    ns  = company["site"]        == "—"
+    nso = company["social"]      == "—"
+    nr  = company["rating"]      == "—"
+    nrv = company["reviews"]     == 0
     nsv = not company.get("services")
     nft = not company.get("features")
+    no_pr = not company.get("price_range")
 
-    if not any([ns, nso, nr, nrv, nsv, nft]):
+    if not any([ns, nso, nr, nrv, nsv, nft, no_pr]):
         return company
 
     try:
@@ -387,31 +390,26 @@ def _enrich(company: dict) -> dict:
                     pass
 
     # ── 5. Товары и услуги ─────────────────────────────────────────────
+    # NOTE: Yandex Maps renders services via React; static CSS selectors may
+    # be empty — rely primarily on JSON-LD hasOfferCatalog (in _apply_jsonld).
+    # The section-heading fallback was removed because it captured navigation
+    # tabs ("Обзор") instead of real service names.
     if not company.get("services"):
         for sel in [
             ".business-services-item-view__name",
             "[class*='services-item-view'] [class*='name']",
-            "[class*='service-list'] [class*='item-title']",
+            ".card-feature-view__title",
         ]:
-            items = [el.get_text(strip=True) for el in soup.select(sel) if el.get_text(strip=True)]
+            items = [el.get_text(strip=True) for el in soup.select(sel)
+                     if el.get_text(strip=True) and len(el.get_text(strip=True)) < 80]
+            # Skip obvious navigation words that appear on every page
+            items = [x for x in items if x.lower() not in {
+                "обзор", "фото", "отзывы", "условия", "информация",
+                "товары и услуги", "услуги", "контакты",
+            }]
             if items:
                 company["services"] = ", ".join(items[:25])
                 break
-        # section-heading fallback
-        if not company.get("services"):
-            for tag in soup.find_all(True):
-                txt = tag.get_text(strip=True).lower()
-                if txt in ("товары и услуги", "услуги", "товары"):
-                    parent = tag.parent
-                    if parent:
-                        names = [el.get_text(strip=True)
-                                 for el in parent.find_all(True)
-                                 if el.get_text(strip=True) and el != tag
-                                 and len(el.get_text(strip=True)) < 80]
-                        names = [n for n in names if n.lower() not in ("товары и услуги","услуги","товары")]
-                        if names:
-                            company["services"] = ", ".join(names[:25])
-                            break
 
     # ── 6. Особенности ────────────────────────────────────────────────
     if not company.get("features"):
@@ -425,6 +423,21 @@ def _enrich(company: dict) -> dict:
             if items:
                 company["features"] = ", ".join(items[:25])
                 break
+
+    # ── 7. Цены ───────────────────────────────────────────────────────
+    if not company.get("price_range"):
+        for sel in [
+            ".business-prices-view__text",
+            "[class*='price-view__text']",
+            "[itemprop='priceRange']",
+            "[class*='business-price'] [class*='value']",
+        ]:
+            el = soup.select_one(sel)
+            if el:
+                txt = el.get_text(strip=True)
+                if txt and len(txt) < 60:
+                    company["price_range"] = txt
+                    break
 
     return company
 
@@ -515,6 +528,38 @@ def _apply_jsonld(company: dict, data):
                 if names:
                     company["services"] = ", ".join(names[:25])
 
+    # Цены: priceRange или offers
+    if not company.get("price_range"):
+        pr = data.get("priceRange")
+        if isinstance(pr, str) and pr.strip():
+            company["price_range"] = pr.strip()[:50]
+        else:
+            # Try to derive a range from individual offer prices
+            offers_list = data.get("makesOffer") or []
+            if not offers_list:
+                cat = data.get("hasOfferCatalog") or {}
+                if isinstance(cat, dict):
+                    offers_list = cat.get("itemListElement") or []
+            if isinstance(offers_list, list) and offers_list:
+                prices = []
+                for o in offers_list:
+                    if not isinstance(o, dict):
+                        continue
+                    p = o.get("price") or (o.get("offers") or {}).get("price")
+                    if p is not None:
+                        try:
+                            prices.append(float(str(p).replace(",", ".")))
+                        except (ValueError, TypeError):
+                            pass
+                if prices:
+                    mn, mx = int(min(prices)), int(max(prices))
+                    cur = data.get("priceCurrency") or "₽"
+                    if cur == "RUB":
+                        cur = "₽"
+                    company["price_range"] = (
+                        f"{mn} {cur}" if mn == mx else f"{mn}–{mx} {cur}"
+                    )
+
     # Особенности: amenityFeature
     if not company.get("features"):
         amenity = data.get("amenityFeature") or []
@@ -588,7 +633,7 @@ def _scrape_page(query: str, page: int) -> list[dict]:
             "lat": "—", "lon": "—", "category": category,
             "rating": rating, "reviews": reviews,
             "has_site": "Нет", "map_url": map_url,
-            "services": "", "features": "",
+            "services": "", "features": "", "price_range": "",
         })
     return companies
 

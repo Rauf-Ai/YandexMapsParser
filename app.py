@@ -222,8 +222,9 @@ def _run_job(job_id: str, query: str, max_companies: int,
                  "reviews":  c["reviews"],
                  "has_site": c["has_site"],
                  "map_url":  c.get("map_url", ""),
-                 "services": c.get("services", ""),
-                 "features": c.get("features", ""),
+                 "services":    c.get("services",    ""),
+                 "features":    c.get("features",    ""),
+                 "price_range": c.get("price_range", ""),
              } for c in filtered[:8]])
 
     except Exception as exc:

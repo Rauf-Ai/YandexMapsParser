@@ -8,19 +8,25 @@ const FIELD_DEFS = {
   rating: "Рейтинг", reviews: "Кол-во отзывов",
   has_site: "Есть сайт", map_url: "Ссылка на карты",
   services: "Товары и услуги", features: "Особенности",
+  price_range: "Цены",
 };
 const ALWAYS_ON = new Set(["name"]);
 
 // ── App state ────────────────────────────────────────────────────────────
-let selectedFields = new Set(Object.keys(FIELD_DEFS));
-let currentSSE     = null;
-let currentJobId   = null;
-let allCompanies   = [];      // full result set
-let filteredRows   = [];      // after table search/filter
-let sortCol        = "";
-let sortDir        = 1;       // 1=asc -1=desc
-let currentPage    = 1;
-const PAGE_SIZE    = 25;
+let selectedFields      = new Set(Object.keys(FIELD_DEFS));
+let currentSSE          = null;
+let currentJobId        = null;
+let allCompanies        = [];
+let filteredRows        = [];
+let sortCol             = "";
+let sortDir             = 1;
+let currentPage         = 1;
+const PAGE_SIZE         = 25;
+
+// Multi-select filter state
+let selectedFeatureTags = new Set();
+let selectedServiceTags = new Set();
+let activeQuickFilters  = new Set();   // each entry = "kw1,kw2,..." string from data-kws
 
 // ── DOM helpers ──────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -56,6 +62,20 @@ $("logoLink").addEventListener("click", e => {
 document.addEventListener("DOMContentLoaded", () => {
   buildFieldsGrid();
   loadHistory();
+  // Quick-filter buttons (preset, always in HTML)
+  document.querySelectorAll(".quick-filter-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const kws = btn.dataset.kws;
+      if (activeQuickFilters.has(kws)) {
+        activeQuickFilters.delete(kws);
+        btn.classList.remove("active");
+      } else {
+        activeQuickFilters.add(kws);
+        btn.classList.add("active");
+      }
+      applyTableFilters();
+    });
+  });
 });
 
 // ── Field selection grid ─────────────────────────────────────────────────
@@ -237,23 +257,71 @@ async function fetchAndRenderTable(jobId) {
     const res = await fetch(`/api/results/${jobId}`);
     if (!res.ok) return;
     allCompanies = await res.json();
+
+    // Reset all multi-select state when new results arrive
+    selectedFeatureTags.clear();
+    selectedServiceTags.clear();
+    activeQuickFilters.clear();
+    document.querySelectorAll(".quick-filter-btn").forEach(b => b.classList.remove("active"));
+
     const hasAnyTags = allCompanies.some(c => c.services || c.features);
     $("tagFiltersRow").style.display = hasAnyTags ? "" : "none";
-    buildTagCloud(allCompanies);
+
+    buildCloud(allCompanies, "features", $("featureTags"), selectedFeatureTags, "ftr-tag");
+    buildCloud(allCompanies, "services", $("serviceTags"), selectedServiceTags, "srv-tag");
+
+    // Hide services bar if no services data at all
+    const hasSrv = allCompanies.some(c => c.services);
+    $("servicesBar").style.display = hasSrv ? "" : "none";
+
     applyTableFilters();
   } catch { /* silently ignore */ }
 }
 
+// ── Tag cloud (multi-select, AND logic) ──────────────────────────────────
+function buildCloud(companies, field, cloudEl, selectedSet, chipClass) {
+  const counts = {};
+  companies.forEach(c => {
+    (c[field] || "").split(", ").filter(Boolean).forEach(tag => {
+      counts[tag] = (counts[tag] || 0) + 1;
+    });
+  });
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 30);
+  if (!sorted.length) { cloudEl.innerHTML = ""; return; }
+
+  function render() {
+    cloudEl.innerHTML = sorted.map(([tag, n]) =>
+      `<button class="cloud-tag ${chipClass} ${selectedSet.has(tag) ? "active" : ""}"
+               data-tag="${esc(tag)}" title="${n} компаний">
+        ${esc(trunc(tag, 24))}<sup>${n}</sup>
+      </button>`
+    ).join("");
+    cloudEl.querySelectorAll(".cloud-tag").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const t = btn.dataset.tag;
+        selectedSet.has(t) ? selectedSet.delete(t) : selectedSet.add(t);
+        render();
+        applyTableFilters();
+      });
+    });
+  }
+  render();
+}
+
+// ── Table filters ─────────────────────────────────────────────────────────
 function applyTableFilters() {
-  const q        = ($("tableSearch").value || "").toLowerCase();
-  const hasSite  = $("filterHasSite").value;
-  const hasSoc   = $("filterHasSocial").value;
-  const hasSrv   = $("filterHasServices").value;
-  const hasFtr   = $("filterHasFeatures").value;
-  const srvKw    = ($("filterServiceKw").value  || "").toLowerCase();
-  const ftrKw    = ($("filterFeatureKw").value  || "").toLowerCase();
+  const q       = ($("tableSearch").value   || "").toLowerCase();
+  const hasSite = $("filterHasSite").value;
+  const hasSoc  = $("filterHasSocial").value;
+  const hasSrv  = $("filterHasServices").value;
+  const hasFtr  = $("filterHasFeatures").value;
+  const srvKw   = ($("filterServiceKw")?.value || "").toLowerCase();
+  const ftrKw   = ($("filterFeatureKw")?.value || "").toLowerCase();
 
   filteredRows = allCompanies.filter(c => {
+    const feats = (c.features || "").toLowerCase();
+    const srvs  = (c.services  || "").toLowerCase();
+
     if (hasSite && c.has_site !== hasSite) return false;
     if (hasSoc === "yes" && c.social === "—") return false;
     if (hasSoc === "no"  && c.social !== "—") return false;
@@ -261,8 +329,26 @@ function applyTableFilters() {
     if (hasSrv === "no"  &&  c.services) return false;
     if (hasFtr === "yes" && !c.features) return false;
     if (hasFtr === "no"  &&  c.features) return false;
-    if (srvKw && !(c.services || "").toLowerCase().includes(srvKw)) return false;
-    if (ftrKw && !(c.features || "").toLowerCase().includes(ftrKw)) return false;
+
+    // Quick feature presets: each active button = AND, keywords within a button = OR
+    for (const kwStr of activeQuickFilters) {
+      const kws = kwStr.split(",").map(s => s.trim()).filter(Boolean);
+      if (!kws.some(kw => feats.includes(kw))) return false;
+    }
+
+    // Multi-select tag clouds: AND between selected tags
+    for (const tag of selectedFeatureTags) {
+      if (!feats.includes(tag.toLowerCase())) return false;
+    }
+    for (const tag of selectedServiceTags) {
+      if (!srvs.includes(tag.toLowerCase())) return false;
+    }
+
+    // Keyword text inputs
+    if (ftrKw && !feats.includes(ftrKw)) return false;
+    if (srvKw && !srvs.includes(srvKw))  return false;
+
+    // General search covers name/address/phone/category/services/features
     if (q) {
       const hay = [c.name, c.address, c.phone, c.category, c.services, c.features]
         .join(" ").toLowerCase();
@@ -275,10 +361,13 @@ function applyTableFilters() {
   if (sortCol) {
     filteredRows.sort((a, b) => {
       let av = a[sortCol], bv = b[sortCol];
+      if (sortCol === "price_range") {
+        return (priceToNum(av) - priceToNum(bv)) * sortDir;
+      }
       if (typeof av === "number" && typeof bv === "number")
         return (av - bv) * sortDir;
-      if (av === "—" || av == null) av = sortDir > 0 ? "￿" : "";
-      if (bv === "—" || bv == null) bv = sortDir > 0 ? "￿" : "";
+      if (av === "—" || av == null || av === "") av = sortDir > 0 ? "￿" : "";
+      if (bv === "—" || bv == null || bv === "") bv = sortDir > 0 ? "￿" : "";
       return String(av).localeCompare(String(bv), "ru") * sortDir;
     });
   }
@@ -287,10 +376,17 @@ function applyTableFilters() {
   renderTablePage();
 }
 
+function priceToNum(s) {
+  if (!s) return Infinity;
+  const nums = String(s).match(/\d[\d\s]*/g);
+  if (!nums) return Infinity;
+  return parseInt(nums[0].replace(/\s/g, ""), 10);
+}
+
 function renderTablePage() {
-  const start  = (currentPage - 1) * PAGE_SIZE;
-  const slice  = filteredRows.slice(start, start + PAGE_SIZE);
-  const tbody  = $("mainTableBody");
+  const start = (currentPage - 1) * PAGE_SIZE;
+  const slice = filteredRows.slice(start, start + PAGE_SIZE);
+  const tbody = $("mainTableBody");
 
   $("tableCount").textContent =
     `${filteredRows.length} из ${allCompanies.length} компаний`;
@@ -307,6 +403,7 @@ function renderTablePage() {
       <td class="td-center">${c.reviews > 0 ? c.reviews : '<span class="td-muted">—</span>'}</td>
       <td class="td-addr" title="${esc(c.address)}">${esc(trunc(c.address, 35))}</td>
       <td class="td-muted">${esc(trunc(c.category, 20))}</td>
+      <td class="td-price">${c.price_range ? esc(c.price_range) : '<span class="td-muted">—</span>'}</td>
       <td>${renderTags(c.services, "srv")}</td>
       <td>${renderTags(c.features, "ftr")}</td>
       <td>${c.map_url
@@ -317,6 +414,48 @@ function renderTablePage() {
   renderPagination();
 }
 
+// ── Tag chips with +N expand/collapse ────────────────────────────────────
+const TAG_MAX = 3;
+
+function renderTags(raw, type) {
+  if (!raw) return '<span class="td-muted">—</span>';
+  const items = raw.split(", ").filter(Boolean);
+  if (items.length <= TAG_MAX) {
+    return `<div class="tag-cell">${items.map(t =>
+      `<span class="tag-chip tag-chip--${type}">${esc(trunc(t, 22))}</span>`
+    ).join("")}</div>`;
+  }
+  const rest = items.length - TAG_MAX;
+  return `<div class="tag-cell" data-raw="${esc(raw)}" data-type="${type}" data-expanded="0">${
+    items.slice(0, TAG_MAX).map(t =>
+      `<span class="tag-chip tag-chip--${type}">${esc(trunc(t, 22))}</span>`
+    ).join("")
+  }<span class="tag-chip tag-chip--more">+${rest} ещё</span></div>`;
+}
+
+// Delegated click: expand / collapse +N chip
+$("mainTableBody").addEventListener("click", e => {
+  const chip = e.target.closest(".tag-chip--more");
+  if (!chip) return;
+  const cell = chip.closest(".tag-cell[data-raw]");
+  if (!cell) return;
+  const expanded = cell.dataset.expanded === "1";
+  const items = cell.dataset.raw.split(", ").filter(Boolean);
+  const type  = cell.dataset.type;
+  if (expanded) {
+    cell.dataset.expanded = "0";
+    cell.innerHTML = items.slice(0, TAG_MAX).map(t =>
+      `<span class="tag-chip tag-chip--${type}">${esc(trunc(t, 22))}</span>`
+    ).join("") + `<span class="tag-chip tag-chip--more">+${items.length - TAG_MAX} ещё</span>`;
+  } else {
+    cell.dataset.expanded = "1";
+    cell.innerHTML = items.map(t =>
+      `<span class="tag-chip tag-chip--${type}">${esc(trunc(t, 22))}</span>`
+    ).join("") + `<span class="tag-chip tag-chip--more">↑ свернуть</span>`;
+  }
+});
+
+// ── Social chips ──────────────────────────────────────────────────────────
 function renderSocials(social) {
   if (!social || social === "—") return '<span class="td-muted">—</span>';
   const links = social.split(", ").filter(Boolean).map(s => {
@@ -333,43 +472,7 @@ function renderSocials(social) {
   return links.join(" ");
 }
 
-function renderTags(raw, type) {
-  if (!raw) return '<span class="td-muted">—</span>';
-  const items = raw.split(", ").filter(Boolean);
-  const MAX_VISIBLE = 3;
-  const visible = items.slice(0, MAX_VISIBLE);
-  const rest    = items.length - MAX_VISIBLE;
-  let html = visible.map(t =>
-    `<span class="tag-chip tag-chip--${type}" title="${esc(raw)}">${esc(trunc(t, 22))}</span>`
-  ).join("");
-  if (rest > 0)
-    html += `<span class="tag-chip tag-chip--more" title="${esc(raw)}">+${rest}</span>`;
-  return `<div class="tag-cell">${html}</div>`;
-}
-
-// Build the clickable feature tag cloud from loaded companies
-function buildTagCloud(companies) {
-  const counts = {};
-  companies.forEach(c => {
-    (c.features || "").split(", ").filter(Boolean).forEach(f => {
-      counts[f] = (counts[f] || 0) + 1;
-    });
-  });
-  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20);
-  const cloud = $("featureTags");
-  if (!sorted.length) { cloud.innerHTML = ""; return; }
-  cloud.innerHTML = sorted.map(([f, n]) =>
-    `<button class="feature-cloud-tag" data-feature="${esc(f)}" title="${n} компаний">${esc(f)} <sup>${n}</sup></button>`
-  ).join("");
-  cloud.querySelectorAll(".feature-cloud-tag").forEach(btn => {
-    btn.addEventListener("click", () => {
-      const cur = $("filterFeatureKw").value;
-      $("filterFeatureKw").value = cur === btn.dataset.feature ? "" : btn.dataset.feature;
-      applyTableFilters();
-    });
-  });
-}
-
+// ── Pagination ────────────────────────────────────────────────────────────
 function renderPagination() {
   const total = Math.ceil(filteredRows.length / PAGE_SIZE);
   const el    = $("pagination");
@@ -415,7 +518,8 @@ $("mainTable").addEventListener("click", e => {
 ["tableSearch", "filterHasSite", "filterHasSocial",
  "filterHasServices", "filterHasFeatures",
  "filterServiceKw", "filterFeatureKw"].forEach(id => {
-  $(id).addEventListener("input", applyTableFilters);
+  const el = $(id);
+  if (el) el.addEventListener("input", applyTableFilters);
 });
 
 // ── History ───────────────────────────────────────────────────────────────
