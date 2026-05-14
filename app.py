@@ -182,8 +182,9 @@ def _run_job(job_id: str, query: str, max_companies: int,
                       if isinstance(c["rating"], float)]
         avg        = round(sum(ratings) / len(ratings), 1) if ratings else 0.0
 
-        job["status"]   = "done"
-        job["filename"] = filename
+        job["status"]    = "done"
+        job["filename"]  = filename
+        job["companies"] = filtered   # stored for /api/results/<id>
 
         # Save to history
         hist  = _load_history()
@@ -320,6 +321,14 @@ def api_download(filename):
     if not path.exists():
         return jsonify(error="File not found"), 404
     return send_file(path, as_attachment=True, download_name=safe)
+
+
+@app.get("/api/results/<job_id>")
+def api_results(job_id):
+    job = JOBS.get(job_id)
+    if not job or job.get("status") != "done":
+        return jsonify(error="Not found or not done"), 404
+    return jsonify(job.get("companies", []))
 
 
 @app.get("/api/history")

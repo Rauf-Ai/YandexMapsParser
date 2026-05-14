@@ -1,34 +1,55 @@
 "use strict";
 
-// ── Field definitions (mirrors yandex_parser.ALL_FIELD_DEFS) ─────────────
+// ── Field definitions ────────────────────────────────────────────────────
 const FIELD_DEFS = {
-  name:     "Название",
-  phone:    "Телефон",
-  site:     "Сайт",
-  social:   "Социальные сети",
-  address:  "Адрес",
-  lat:      "Широта",
-  lon:      "Долгота",
-  category: "Категория",
-  rating:   "Рейтинг",
-  reviews:  "Кол-во отзывов",
-  has_site: "Есть сайт",
-  map_url:  "Ссылка на карты",
+  name: "Название", phone: "Телефон", site: "Сайт",
+  social: "Социальные сети", address: "Адрес",
+  lat: "Широта", lon: "Долгота", category: "Категория",
+  rating: "Рейтинг", reviews: "Кол-во отзывов",
+  has_site: "Есть сайт", map_url: "Ссылка на карты",
 };
 const ALWAYS_ON = new Set(["name"]);
 
-// ── State ────────────────────────────────────────────────────────────────
+// ── App state ────────────────────────────────────────────────────────────
 let selectedFields = new Set(Object.keys(FIELD_DEFS));
 let currentSSE     = null;
+let currentJobId   = null;
+let allCompanies   = [];      // full result set
+let filteredRows   = [];      // after table search/filter
+let sortCol        = "";
+let sortDir        = 1;       // 1=asc -1=desc
+let currentPage    = 1;
+const PAGE_SIZE    = 25;
 
-// ── DOM refs ─────────────────────────────────────────────────────────────
+// ── DOM helpers ──────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 
-const searchSection   = $("searchSection");
-const progressSection = $("progressSection");
-const resultSection   = $("resultSection");
-const errorSection    = $("errorSection");
-const historySection  = $("historySection");
+// ── Navigation ───────────────────────────────────────────────────────────
+const PAGES = ["search", "results", "history"];
+
+function showPage(name) {
+  PAGES.forEach(p => {
+    $(`page-${p}`).style.display = p === name ? "" : "none";
+  });
+  document.querySelectorAll(".nav-tab").forEach(t => {
+    t.classList.toggle("active", t.dataset.section === name);
+  });
+}
+
+document.querySelectorAll(".nav-tab").forEach(tab => {
+  tab.addEventListener("click", e => {
+    e.preventDefault();
+    const sec = tab.dataset.section;
+    if (sec === "results" && allCompanies.length === 0) return;
+    if (sec === "history") loadHistory();
+    showPage(sec);
+  });
+});
+
+$("logoLink").addEventListener("click", e => {
+  e.preventDefault();
+  showPage("search");
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────
 document.addEventListener("DOMContentLoaded", () => {
@@ -46,57 +67,44 @@ function buildFieldsGrid() {
     wrap.className = "check-item";
     wrap.innerHTML = `
       <input type="checkbox" data-field="${key}" ${selectedFields.has(key) ? "checked" : ""}/>
-      <span class="check-box"></span>
-      <span>${label}</span>`;
+      <span class="check-box"></span><span>${label}</span>`;
     wrap.querySelector("input").addEventListener("change", e => {
-      if (e.target.checked) selectedFields.add(key);
-      else selectedFields.delete(key);
+      e.target.checked ? selectedFields.add(key) : selectedFields.delete(key);
       updateFieldsCount();
     });
     grid.appendChild(wrap);
   }
   updateFieldsCount();
 }
-
 function updateFieldsCount() {
   const total = Object.keys(FIELD_DEFS).length - ALWAYS_ON.size;
   const sel   = [...selectedFields].filter(k => !ALWAYS_ON.has(k)).length;
   $("fieldsCount").textContent =
     sel === total ? "все выбраны" : `выбрано: ${sel + 1}/${total + 1}`;
 }
-
 $("selectAllFields").addEventListener("click", () => {
   selectedFields = new Set(Object.keys(FIELD_DEFS));
-  $("fieldsGrid").querySelectorAll("input[type=checkbox]")
-    .forEach(cb => { cb.checked = true; });
+  $("fieldsGrid").querySelectorAll("input").forEach(cb => cb.checked = true);
   updateFieldsCount();
 });
-
 $("selectNoneFields").addEventListener("click", () => {
   selectedFields = new Set(["name"]);
-  $("fieldsGrid").querySelectorAll("input[type=checkbox]")
-    .forEach(cb => { cb.checked = false; });
+  $("fieldsGrid").querySelectorAll("input").forEach(cb => cb.checked = false);
   updateFieldsCount();
 });
 
 // ── Collapsible ───────────────────────────────────────────────────────────
 $("fieldsToggleBtn").addEventListener("click", () => {
-  const body = $("fieldsBody");
-  const btn  = $("fieldsToggleBtn");
-  body.classList.toggle("open");
-  btn.classList.toggle("open");
+  $("fieldsBody").classList.toggle("open");
+  $("fieldsToggleBtn").classList.toggle("open");
 });
 
 // ── Example chips ─────────────────────────────────────────────────────────
 document.querySelectorAll(".chip").forEach(chip => {
   chip.addEventListener("click", () => {
-    const q    = chip.dataset.q    || "";
-    const city = chip.dataset.city || "";
-    if (q) {
-      $("categoryInput").value = q;
-      $("queryInput").value    = "";
-    }
-    if (city) $("cityInput").value = city;
+    if (chip.dataset.q)    $("categoryInput").value = chip.dataset.q;
+    if (chip.dataset.city) $("cityInput").value     = chip.dataset.city;
+    if (chip.dataset.q)    $("queryInput").value    = "";
   });
 });
 
@@ -114,37 +122,36 @@ $("searchForm").addEventListener("submit", async e => {
     return;
   }
 
-  const filters = {
-    no_site:   $("filterNoSite").checked,
-    no_social: $("filterNoSocial").checked,
-    no_phone:  $("filterNoPhone").checked,
-  };
-
   $("startBtn").disabled = true;
+  $("progressSection").classList.remove("hidden");
+  $("errorSection").classList.add("hidden");
+  $("progressBar").style.width = "0%";
+  $("progressFound").textContent = "Найдено: 0";
+  $("progressPct").textContent   = "0%";
+  $("logBox").innerHTML = "";
+
   try {
     const res = await fetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         category, city, query, max,
-        ...filters,
+        no_site:   $("filterNoSite").checked,
+        no_social: $("filterNoSocial").checked,
+        no_phone:  $("filterNoPhone").checked,
         fields: [...selectedFields],
       }),
     });
     const json = await res.json();
     if (!res.ok || json.error) throw new Error(json.error || "Ошибка запуска");
 
-    $("progressBar").style.width = "0%";
-    $("progressFound").textContent = "Найдено: 0";
-    $("progressPct").textContent   = "0%";
+    currentJobId = json.job_id;
     $("progressTitle").textContent = `Сбор: «${json.query}»`;
-    $("logBox").innerHTML = "";
-    showSection("progress");
     startSSE(json.job_id, max);
   } catch (err) {
+    $("progressSection").classList.add("hidden");
     $("errorMsg").textContent = err.message;
-    showSection("error");
-  } finally {
+    $("errorSection").classList.remove("hidden");
     $("startBtn").disabled = false;
   }
 });
@@ -155,9 +162,7 @@ function startSSE(jobId, max) {
   const sse = new EventSource(`/api/stream/${jobId}`);
   currentSSE = sse;
 
-  sse.addEventListener("start", e => {
-    addLog(JSON.parse(e.data).message, "ok");
-  });
+  sse.addEventListener("start", e => addLog(JSON.parse(e.data).message, "ok"));
   sse.addEventListener("progress", e => {
     const d = JSON.parse(e.data);
     setProgress(d.found, max);
@@ -165,8 +170,11 @@ function startSSE(jobId, max) {
   });
   sse.addEventListener("done", e => {
     sse.close(); currentSSE = null;
-    renderResult(JSON.parse(e.data));
-    showSection("result");
+    $("startBtn").disabled = false;
+    renderSummary(JSON.parse(e.data));
+    fetchAndRenderTable(jobId);
+    showNavTab("results");
+    showPage("results");
     loadHistory();
   });
   sse.addEventListener("error", e => {
@@ -174,138 +182,224 @@ function startSSE(jobId, max) {
     try { msg = JSON.parse(e.data).message; } catch {}
     addLog(msg, "err");
     sse.close(); currentSSE = null;
+    $("startBtn").disabled = false;
+    $("progressSection").classList.add("hidden");
     $("errorMsg").textContent = msg;
-    showSection("error");
+    $("errorSection").classList.remove("hidden");
   });
   sse.addEventListener("close", () => { sse.close(); currentSSE = null; });
-  sse.onerror = () => {
-    if (sse.readyState !== EventSource.CLOSED)
-      addLog("Соединение прервано", "warn");
-  };
+}
+
+function showNavTab(name) {
+  const tab = document.querySelector(`.nav-tab[data-section="${name}"]`);
+  if (tab) tab.style.display = "";
 }
 
 // ── Progress helpers ──────────────────────────────────────────────────────
 function setProgress(found, total) {
   const pct = total > 0 ? Math.min(100, Math.round(found / total * 100)) : 0;
-  $("progressBar").style.width     = pct + "%";
-  $("progressFound").textContent   = `Найдено: ${found}`;
-  $("progressPct").textContent     = pct + "%";
+  $("progressBar").style.width   = pct + "%";
+  $("progressFound").textContent = `Найдено: ${found}`;
+  $("progressPct").textContent   = pct + "%";
 }
-
 function addLog(text, type = "") {
   const span = document.createElement("span");
   span.className = "log-line" + (type ? ` log-line--${type}` : "");
-  const ts = new Date().toLocaleTimeString("ru", { hour12: false });
-  span.textContent = `[${ts}] ${text}`;
+  span.textContent = `[${new Date().toLocaleTimeString("ru")}] ${text}`;
   const box = $("logBox");
   box.appendChild(span);
   box.scrollTop = box.scrollHeight;
 }
 
-// ── Result renderer ───────────────────────────────────────────────────────
-function renderResult(d) {
-  $("resultSub").textContent = `Файл: ${d.filename}`;
-  $("downloadBtn").href      = `/api/download/${encodeURIComponent(d.filename)}`;
+// ── Summary card ─────────────────────────────────────────────────────────
+function renderSummary(d) {
+  $("resultSub").textContent    = `Файл: ${d.filename}`;
+  $("downloadBtn").href         = `/api/download/${encodeURIComponent(d.filename)}`;
   $("downloadBtn").setAttribute("download", d.filename);
 
-  // Show soft warning when filter limited results
-  const warnEl = $("resultWarning");
-  if (d.warning) {
-    warnEl.textContent = "⚠ " + d.warning;
-    warnEl.style.display = "";
-  } else {
-    warnEl.style.display = "none";
-  }
+  const warn = $("resultWarning");
+  if (d.warning) { warn.textContent = "⚠ " + d.warning; warn.classList.remove("hidden"); }
+  else warn.classList.add("hidden");
 
   $("statsGrid").innerHTML = `
-    <div class="stat-card">
-      <div class="stat-value">${d.total}</div>
-      <div class="stat-label">Всего</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value stat-value--green">${d.with_site}</div>
-      <div class="stat-label">С сайтом (${d.pct_site}%)</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value stat-value--accent">${d.without_site}</div>
-      <div class="stat-label">Без сайта</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value stat-value--blue">${d.with_social ?? "—"}</div>
-      <div class="stat-label">С соцсетями</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value">${d.with_phone}</div>
-      <div class="stat-label">С телефоном (${d.pct_phone}%)</div>
-    </div>
-    <div class="stat-card">
-      <div class="stat-value">${d.avg_rating || "—"}</div>
-      <div class="stat-label">Средний рейтинг</div>
-    </div>`;
+    <div class="stat-card"><div class="stat-value">${d.total}</div><div class="stat-label">Всего</div></div>
+    <div class="stat-card"><div class="stat-value stat-value--green">${d.with_site}</div><div class="stat-label">С сайтом (${d.pct_site}%)</div></div>
+    <div class="stat-card"><div class="stat-value stat-value--accent">${d.without_site}</div><div class="stat-label">Без сайта</div></div>
+    <div class="stat-card"><div class="stat-value stat-value--blue">${d.with_social ?? "—"}</div><div class="stat-label">С соцсетями</div></div>
+    <div class="stat-card"><div class="stat-value">${d.with_phone}</div><div class="stat-label">С телефоном (${d.pct_phone}%)</div></div>
+    <div class="stat-card"><div class="stat-value">${d.avg_rating || "—"}</div><div class="stat-label">Средний рейтинг</div></div>`;
+}
 
-  const tbody = $("previewBody");
-  tbody.innerHTML = (d.preview || []).map(c => `
+// ── Full table ────────────────────────────────────────────────────────────
+async function fetchAndRenderTable(jobId) {
+  try {
+    const res = await fetch(`/api/results/${jobId}`);
+    if (!res.ok) return;
+    allCompanies = await res.json();
+    applyTableFilters();
+  } catch { /* silently ignore */ }
+}
+
+function applyTableFilters() {
+  const q        = ($("tableSearch").value || "").toLowerCase();
+  const hasSite  = $("filterHasSite").value;
+  const hasSoc   = $("filterHasSocial").value;
+
+  filteredRows = allCompanies.filter(c => {
+    if (hasSite && c.has_site !== hasSite) return false;
+    if (hasSoc === "yes" && c.social === "—") return false;
+    if (hasSoc === "no"  && c.social !== "—") return false;
+    if (q) {
+      const hay = [c.name, c.address, c.phone, c.category]
+        .join(" ").toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  // Sort
+  if (sortCol) {
+    filteredRows.sort((a, b) => {
+      let av = a[sortCol], bv = b[sortCol];
+      if (typeof av === "number" && typeof bv === "number")
+        return (av - bv) * sortDir;
+      if (av === "—" || av == null) av = sortDir > 0 ? "￿" : "";
+      if (bv === "—" || bv == null) bv = sortDir > 0 ? "￿" : "";
+      return String(av).localeCompare(String(bv), "ru") * sortDir;
+    });
+  }
+
+  currentPage = 1;
+  renderTablePage();
+}
+
+function renderTablePage() {
+  const start  = (currentPage - 1) * PAGE_SIZE;
+  const slice  = filteredRows.slice(start, start + PAGE_SIZE);
+  const tbody  = $("mainTableBody");
+
+  $("tableCount").textContent =
+    `${filteredRows.length} из ${allCompanies.length} компаний`;
+
+  tbody.innerHTML = slice.map(c => `
     <tr>
-      <td title="${esc(c.name)}">${esc(trunc(c.name, 32))}</td>
-      <td>${esc(c.phone)}</td>
+      <td class="td-name" title="${esc(c.name)}">${esc(trunc(c.name, 35))}</td>
+      <td class="td-mono">${esc(c.phone)}</td>
       <td>${c.site !== "—"
-        ? `<a href="https://${esc(c.site)}" target="_blank" class="link-map">${esc(trunc(c.site, 28))}</a>`
-        : '<span style="color:var(--muted)">—</span>'}</td>
-      <td>${c.social !== "—"
-        ? `<span class="badge badge--val" title="${esc(c.social)}">${esc(trunc(c.social, 26))}</span>`
-        : '<span style="color:var(--muted)">—</span>'}</td>
-      <td>${starsHtml(c.rating)}</td>
-      <td title="${esc(c.address)}">${esc(trunc(c.address, 32))}</td>
+        ? `<a href="https://${esc(c.site)}" target="_blank" rel="noopener" class="link-ext">${esc(trunc(c.site, 28))}</a>`
+        : '<span class="td-muted">—</span>'}</td>
+      <td>${renderSocials(c.social)}</td>
+      <td class="td-center">${starsHtml(c.rating)}</td>
+      <td class="td-center">${c.reviews > 0 ? c.reviews : '<span class="td-muted">—</span>'}</td>
+      <td class="td-addr" title="${esc(c.address)}">${esc(trunc(c.address, 35))}</td>
+      <td class="td-muted">${esc(trunc(c.category, 20))}</td>
       <td>${c.map_url
-        ? `<a href="${esc(c.map_url)}" target="_blank" class="link-map">🗺 открыть</a>`
+        ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps">🗺</a>`
         : "—"}</td>
     </tr>`).join("");
 
-  resultSection.className = "card result-card";
+  renderPagination();
 }
+
+function renderSocials(social) {
+  if (!social || social === "—") return '<span class="td-muted">—</span>';
+  const links = social.split(", ").filter(Boolean).map(s => {
+    const icon = s.includes("vk.com") ? "VK" :
+                 s.includes("t.me") || s.includes("telegram") ? "TG" :
+                 s.includes("instagram") ? "IG" :
+                 s.includes("ok.ru") ? "OK" :
+                 s.includes("youtube") ? "YT" :
+                 s.includes("whatsapp") ? "WA" :
+                 s.includes("tiktok") ? "TK" : "🔗";
+    return `<a href="https://${esc(s)}" target="_blank" rel="noopener"
+               class="social-chip" title="${esc(s)}">${icon}</a>`;
+  });
+  return links.join(" ");
+}
+
+function renderPagination() {
+  const total = Math.ceil(filteredRows.length / PAGE_SIZE);
+  const el    = $("pagination");
+  if (total <= 1) { el.innerHTML = ""; return; }
+
+  let html = `<button class="page-btn" ${currentPage === 1 ? "disabled" : ""}
+                data-page="${currentPage - 1}">‹ Пред</button>`;
+  const delta = 2;
+  for (let i = 1; i <= total; i++) {
+    if (i === 1 || i === total || Math.abs(i - currentPage) <= delta) {
+      html += `<button class="page-btn ${i === currentPage ? "active" : ""}"
+                 data-page="${i}">${i}</button>`;
+    } else if (Math.abs(i - currentPage) === delta + 1) {
+      html += `<span class="page-ellipsis">…</span>`;
+    }
+  }
+  html += `<button class="page-btn" ${currentPage === total ? "disabled" : ""}
+             data-page="${currentPage + 1}">След ›</button>`;
+  el.innerHTML = html;
+
+  el.querySelectorAll(".page-btn:not([disabled])").forEach(btn => {
+    btn.addEventListener("click", () => {
+      currentPage = parseInt(btn.dataset.page);
+      renderTablePage();
+      $("mainTableScroll").scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+// Column sort
+$("mainTable").addEventListener("click", e => {
+  const th = e.target.closest(".sortable");
+  if (!th) return;
+  const col = th.dataset.col;
+  if (sortCol === col) sortDir *= -1;
+  else { sortCol = col; sortDir = -1; }
+  document.querySelectorAll(".sort-arrow").forEach(a => a.textContent = "↕");
+  th.querySelector(".sort-arrow").textContent = sortDir > 0 ? "↑" : "↓";
+  applyTableFilters();
+});
+
+// Table filter inputs
+["tableSearch", "filterHasSite", "filterHasSocial"].forEach(id => {
+  $(id).addEventListener("input", applyTableFilters);
+});
 
 // ── History ───────────────────────────────────────────────────────────────
 async function loadHistory() {
   try {
-    const res = await fetch("/api/history");
-    const entries = await res.json();
-    renderHistory(entries);
+    const res   = await fetch("/api/history");
+    const items = await res.json();
+    renderHistory(items);
+    if (items.length > 0) showNavTab("history");
   } catch { /* ignore */ }
 }
 
 function renderHistory(entries) {
+  const list = $("historyList");
   if (!entries || entries.length === 0) {
-    historySection.style.display = "none";
+    list.innerHTML = '<p class="history-empty">История пустая</p>';
     return;
   }
-  historySection.style.display = "";
-  const list = $("historyList");
-  list.innerHTML = "";
   list.className = "history-list";
-
-  entries.forEach(e => {
-    const item = document.createElement("div");
-    item.className = "history-item";
-    const filterTags = [];
-    if (e.filters?.no_site)   filterTags.push("без сайта");
-    if (e.filters?.no_social) filterTags.push("без соцсетей");
-    if (e.filters?.no_phone)  filterTags.push("без телефона");
-    const filterStr = filterTags.length ? ` · ${filterTags.join(", ")}` : "";
-
-    item.innerHTML = `
-      <div style="flex:1;min-width:0">
-        <div class="history-query">${esc(e.query)}</div>
-        <div class="history-meta">${e.date} в ${e.time}${filterStr}</div>
-      </div>
-      <span class="history-count">${e.total} орг.</span>
-      <div class="history-actions">
-        <a class="btn-secondary" style="padding:6px 12px;font-size:.78rem"
-           href="/api/download/${encodeURIComponent(e.filename)}"
-           download="${esc(e.filename)}" title="Скачать">↓ Excel</a>
-        <button class="btn-ghost btn-sm" data-del="${esc(e.id)}" title="Удалить">✕</button>
+  list.innerHTML = entries.map(e => {
+    const tags = [];
+    if (e.filters?.no_site)   tags.push("без сайта");
+    if (e.filters?.no_social) tags.push("без соцсетей");
+    if (e.filters?.no_phone)  tags.push("без телефона");
+    return `
+      <div class="history-item">
+        <div style="flex:1;min-width:0">
+          <div class="history-query">${esc(e.query)}</div>
+          <div class="history-meta">${e.date} в ${e.time}${tags.length ? " · " + tags.join(", ") : ""}</div>
+        </div>
+        <span class="history-count">${e.total} орг.</span>
+        <div class="history-actions">
+          <a class="btn-secondary" style="padding:5px 12px;font-size:.78rem"
+             href="/api/download/${encodeURIComponent(e.filename)}"
+             download="${esc(e.filename)}">↓ Excel</a>
+          <button class="btn-ghost btn-sm" data-del="${esc(e.id)}">✕</button>
+        </div>
       </div>`;
-    list.appendChild(item);
-  });
+  }).join("");
 
   list.querySelectorAll("[data-del]").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -316,36 +410,21 @@ function renderHistory(entries) {
 }
 
 $("clearHistoryBtn").addEventListener("click", async () => {
-  const hist = await (await fetch("/api/history")).json();
-  for (const e of hist)
+  const items = await (await fetch("/api/history")).json();
+  for (const e of items)
     await fetch(`/api/history/${e.id}`, { method: "DELETE" });
   loadHistory();
 });
 
-// ── Section visibility ────────────────────────────────────────────────────
-function showSection(name) {
-  searchSection.classList.add("hidden");
-  progressSection.classList.add("hidden");
-  resultSection.classList.add("hidden");
-  errorSection.classList.add("hidden");
-
-  progressSection.className = "card hidden";
-  resultSection.className   = "card hidden";
-  errorSection.className    = "card hidden";
-
-  if (name === "search")   searchSection.classList.remove("hidden");
-  if (name === "progress") { progressSection.className = "card"; }
-  if (name === "result")   { /* set by renderResult */ }
-  if (name === "error")    { errorSection.className = "card error-card"; }
-}
-
+// ── Cancel / retry ────────────────────────────────────────────────────────
 $("cancelBtn").addEventListener("click", () => {
   if (currentSSE) { currentSSE.close(); currentSSE = null; }
-  showSection("search");
-  searchSection.classList.remove("hidden");
+  $("startBtn").disabled = false;
+  $("progressSection").classList.add("hidden");
 });
-$("newSearchBtn").addEventListener("click",  () => showSection("search"));
-$("errorRetryBtn").addEventListener("click", () => showSection("search"));
+$("errorRetryBtn").addEventListener("click", () => {
+  $("errorSection").classList.add("hidden");
+});
 
 // ── Utilities ─────────────────────────────────────────────────────────────
 function esc(s) {
@@ -358,8 +437,8 @@ function trunc(s, n) {
   return s.length > n ? s.slice(0, n) + "…" : s;
 }
 function starsHtml(r) {
-  if (!r || r === "—") return '<span style="color:var(--muted)">—</span>';
-  const n = parseFloat(r);
+  if (!r || r === "—") return '<span class="td-muted">—</span>';
+  const n    = parseFloat(r);
   const full = Math.round(n);
-  return `<span class="stars">${"★".repeat(full)}${"☆".repeat(Math.max(0,5-full))}</span> ${n.toFixed(1)}`;
+  return `<span class="stars">${"★".repeat(full)}${"☆".repeat(Math.max(0, 5 - full))}</span>${n.toFixed(1)}`;
 }

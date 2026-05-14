@@ -85,6 +85,24 @@ SOCIAL_DOMAINS = (
     "whatsapp.com",
 )
 
+# Яндексовские соцсети и навигационные ссылки, которые попадают на каждую страницу
+SOCIAL_BLACKLIST = frozenset([
+    "vk.com/yandex.maps", "vk.com/yandexmaps", "vk.com/yandex",
+    "t.me/mapsyandex", "t.me/yandex", "t.me/yandexmaps",
+    "instagram.com/yandex", "ok.ru/yandex",
+    "facebook.com/yandex", "youtube.com/yandex",
+    "twitter.com/yandex", "x.com/yandex",
+])
+
+# JSON-LD @type значения, которые соответствуют бизнесу
+_BUSINESS_TYPES = frozenset([
+    "LocalBusiness", "MedicalBusiness", "HealthAndBeautyBusiness",
+    "FoodEstablishment", "Restaurant", "CafeOrCoffeeShop", "BarOrPub",
+    "Store", "AutoRepair", "Hotel", "Lodging", "BeautySalon",
+    "Dentist", "MedicalOrganization", "HealthClub", "SportsActivityLocation",
+    "TouristAttraction", "Organization",
+])
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -105,6 +123,21 @@ def _clean_site(url: str) -> str:
 
 def _is_social(url: str) -> bool:
     return any(d in url for d in SOCIAL_DOMAINS)
+
+def _is_valid_social(href: str) -> bool:
+    """True только для настоящих соцсетей бизнеса, не Яндексовских страниц."""
+    if not href:
+        return False
+    if "yandex" in href.lower():   # убираем все ссылки на yandex.*
+        return False
+    if not _is_social(href):
+        return False
+    cleaned = _clean_site(href).split("?")[0].rstrip("/")
+    # Убираем известные Яндексовские аккаунты (footer каждой страницы)
+    return not any(
+        cleaned == b or cleaned.startswith(b + "/")
+        for b in SOCIAL_BLACKLIST
+    )
 
 def _dedup_key(c: dict) -> tuple:
     return (c.get("name", "").lower(), c.get("address", "").lower())
@@ -190,11 +223,11 @@ def _parse_feature(feat: dict) -> dict:
         href = (link.get("href") or link.get("url") or "").strip()
         if not href:
             continue
-        if _is_social(href):
+        if _is_valid_social(href):          # строгая проверка — без мусора
             c = _clean_site(href)
             if c not in socials:
                 socials.append(c)
-        elif not site:
+        elif not site and "yandex" not in href:
             site = href
 
     site = _clean_site(site) if site else "—"
@@ -290,15 +323,33 @@ def _enrich(company: dict) -> dict:
                 company["has_site"] = "Да"
                 ns = False
 
-    # ── 3. All <a href> for socials ───────────────────────────────────────
+    # ── 3. Соцсети: сначала ищем в блоке контактов, потом по всей странице ──
     if nso:
         found: list[str] = []
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            if _is_social(href):
+        # Приоритет: специфичные блоки для контактов бизнеса
+        contact_sections = (
+            soup.select(".business-contacts__social a") or
+            soup.select(".business-contacts a") or
+            soup.select("[class*='contacts'] a") or
+            soup.select("[class*='link-source'] a") or
+            []
+        )
+        for a in contact_sections:
+            href = a.get("href", "").strip()
+            if _is_valid_social(href):
                 c = _clean_site(href)
                 if c not in found:
                     found.append(c)
+
+        # Если контактный блок пустой — сканируем всю страницу, но строго
+        if not found:
+            for a in soup.find_all("a", href=True):
+                href = a["href"].strip()
+                if _is_valid_social(href):     # строгая проверка без мусора
+                    c = _clean_site(href)
+                    if c not in found:
+                        found.append(c)
+
         if found:
             company["social"] = ", ".join(found)
             nso = False
@@ -359,39 +410,47 @@ def _apply_jsonld(company: dict, data):
             except ValueError:
                 pass
 
-    # url
-    if company["site"] == "—":
+    # Определяем тип сущности — обрабатываем sameAs только для бизнесов
+    entity_type = data.get("@type", "")
+    if isinstance(entity_type, list):
+        entity_type = " ".join(entity_type)
+    is_business = any(t in entity_type for t in _BUSINESS_TYPES)
+    is_website  = entity_type in ("WebSite", "WebPage")
+
+    # url — только если это не Яндекс и не WebSite сам по себе
+    if not is_website and company["site"] == "—":
         url = data.get("url") or data.get("website") or ""
         if (isinstance(url, str) and url.startswith("http")
-                and not _is_social(url) and "yandex" not in url):
+                and not _is_valid_social(url) and "yandex" not in url):
             company["site"]     = _clean_site(url)
             company["has_site"] = "Да"
 
-    # sameAs → socials
-    same = data.get("sameAs") or []
-    if isinstance(same, str):
-        same = [same]
-    new_s: list[str] = []
-    for link in same:
-        if isinstance(link, str) and _is_social(link):
-            c = _clean_site(link)
-            if c not in new_s:
-                new_s.append(c)
-    if new_s:
-        existing = company["social"]
-        if existing == "—":
-            company["social"] = ", ".join(new_s)
-        else:
-            ex_list = existing.split(", ")
-            for s in new_s:
-                if s not in ex_list:
-                    ex_list.append(s)
-            company["social"] = ", ".join(ex_list)
+    # sameAs → соцсети, только от бизнес-сущностей
+    if is_business or (not is_website and not entity_type):
+        same = data.get("sameAs") or []
+        if isinstance(same, str):
+            same = [same]
+        new_s: list[str] = []
+        for link in same:
+            if isinstance(link, str) and _is_valid_social(link):
+                c = _clean_site(link)
+                if c not in new_s:
+                    new_s.append(c)
+        if new_s:
+            existing = company["social"]
+            if existing == "—":
+                company["social"] = ", ".join(new_s)
+            else:
+                ex_list = existing.split(", ")
+                for s in new_s:
+                    if s not in ex_list:
+                        ex_list.append(s)
+                company["social"] = ", ".join(ex_list)
 
-    # recurse into nested @graph
-    for v in data.values():
-        if isinstance(v, (dict, list)):
-            _apply_jsonld(company, v)
+    # Рекурсия только в @graph (явный граф сущностей), не во все поля
+    graph = data.get("@graph")
+    if graph:
+        _apply_jsonld(company, graph)
 
 # ---------------------------------------------------------------------------
 # HTML fallback scraper
