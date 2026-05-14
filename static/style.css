@@ -269,6 +269,41 @@ form { display: flex; flex-direction: column; gap: 16px; }
 }
 .social-chip:hover { background: #dbeafe; }
 
+/* ── Service / Feature tags in table ─────────────────────────── */
+.tag-cell { display: flex; flex-wrap: wrap; gap: 3px; max-width: 200px; }
+.tag-chip {
+  display: inline-block; padding: 2px 7px; border-radius: 5px;
+  font-size: .7rem; font-weight: 600; white-space: nowrap;
+  cursor: default;
+}
+.tag-chip--srv {
+  background: #eff6ff; color: #2563eb;
+  border: 1px solid #bfdbfe;
+}
+.tag-chip--ftr {
+  background: #f0fdf4; color: #16a34a;
+  border: 1px solid #bbf7d0;
+}
+.tag-chip--more {
+  background: #f8fafc; color: var(--muted);
+  border: 1px solid var(--border); cursor: help;
+}
+
+/* ── Feature tag cloud (secondary filter row) ────────────────── */
+.table-controls--secondary {
+  margin-top: -6px; margin-bottom: 10px;
+  padding-top: 10px; border-top: 1px dashed var(--border);
+}
+.feature-tag-cloud { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
+.feature-cloud-tag {
+  padding: 3px 9px; border: 1.5px solid var(--border); border-radius: 20px;
+  font-size: .74rem; background: var(--bg); color: var(--muted);
+  cursor: pointer; font-family: var(--font); transition: all .13s;
+}
+.feature-cloud-tag:hover,
+.feature-cloud-tag.active { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+.feature-cloud-tag sup { font-size: .65rem; opacity: .7; }
+
 /* ── Pagination ──────────────────────────────────────────────── */
 .pagination { display: flex; align-items: center; gap: 4px; justify-content: center; padding-top: 14px; flex-wrap: wrap; }
 .page-btn {

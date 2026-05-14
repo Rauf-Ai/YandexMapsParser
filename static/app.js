@@ -7,6 +7,7 @@ const FIELD_DEFS = {
   lat: "Широта", lon: "Долгота", category: "Категория",
   rating: "Рейтинг", reviews: "Кол-во отзывов",
   has_site: "Есть сайт", map_url: "Ссылка на карты",
+  services: "Товары и услуги", features: "Особенности",
 };
 const ALWAYS_ON = new Set(["name"]);
 
@@ -236,6 +237,9 @@ async function fetchAndRenderTable(jobId) {
     const res = await fetch(`/api/results/${jobId}`);
     if (!res.ok) return;
     allCompanies = await res.json();
+    const hasAnyTags = allCompanies.some(c => c.services || c.features);
+    $("tagFiltersRow").style.display = hasAnyTags ? "" : "none";
+    buildTagCloud(allCompanies);
     applyTableFilters();
   } catch { /* silently ignore */ }
 }
@@ -244,13 +248,23 @@ function applyTableFilters() {
   const q        = ($("tableSearch").value || "").toLowerCase();
   const hasSite  = $("filterHasSite").value;
   const hasSoc   = $("filterHasSocial").value;
+  const hasSrv   = $("filterHasServices").value;
+  const hasFtr   = $("filterHasFeatures").value;
+  const srvKw    = ($("filterServiceKw").value  || "").toLowerCase();
+  const ftrKw    = ($("filterFeatureKw").value  || "").toLowerCase();
 
   filteredRows = allCompanies.filter(c => {
     if (hasSite && c.has_site !== hasSite) return false;
     if (hasSoc === "yes" && c.social === "—") return false;
     if (hasSoc === "no"  && c.social !== "—") return false;
+    if (hasSrv === "yes" && !c.services) return false;
+    if (hasSrv === "no"  &&  c.services) return false;
+    if (hasFtr === "yes" && !c.features) return false;
+    if (hasFtr === "no"  &&  c.features) return false;
+    if (srvKw && !(c.services || "").toLowerCase().includes(srvKw)) return false;
+    if (ftrKw && !(c.features || "").toLowerCase().includes(ftrKw)) return false;
     if (q) {
-      const hay = [c.name, c.address, c.phone, c.category]
+      const hay = [c.name, c.address, c.phone, c.category, c.services, c.features]
         .join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
@@ -293,6 +307,8 @@ function renderTablePage() {
       <td class="td-center">${c.reviews > 0 ? c.reviews : '<span class="td-muted">—</span>'}</td>
       <td class="td-addr" title="${esc(c.address)}">${esc(trunc(c.address, 35))}</td>
       <td class="td-muted">${esc(trunc(c.category, 20))}</td>
+      <td>${renderTags(c.services, "srv")}</td>
+      <td>${renderTags(c.features, "ftr")}</td>
       <td>${c.map_url
         ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps">🗺</a>`
         : "—"}</td>
@@ -315,6 +331,43 @@ function renderSocials(social) {
                class="social-chip" title="${esc(s)}">${icon}</a>`;
   });
   return links.join(" ");
+}
+
+function renderTags(raw, type) {
+  if (!raw) return '<span class="td-muted">—</span>';
+  const items = raw.split(", ").filter(Boolean);
+  const MAX_VISIBLE = 3;
+  const visible = items.slice(0, MAX_VISIBLE);
+  const rest    = items.length - MAX_VISIBLE;
+  let html = visible.map(t =>
+    `<span class="tag-chip tag-chip--${type}" title="${esc(raw)}">${esc(trunc(t, 22))}</span>`
+  ).join("");
+  if (rest > 0)
+    html += `<span class="tag-chip tag-chip--more" title="${esc(raw)}">+${rest}</span>`;
+  return `<div class="tag-cell">${html}</div>`;
+}
+
+// Build the clickable feature tag cloud from loaded companies
+function buildTagCloud(companies) {
+  const counts = {};
+  companies.forEach(c => {
+    (c.features || "").split(", ").filter(Boolean).forEach(f => {
+      counts[f] = (counts[f] || 0) + 1;
+    });
+  });
+  const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 20);
+  const cloud = $("featureTags");
+  if (!sorted.length) { cloud.innerHTML = ""; return; }
+  cloud.innerHTML = sorted.map(([f, n]) =>
+    `<button class="feature-cloud-tag" data-feature="${esc(f)}" title="${n} компаний">${esc(f)} <sup>${n}</sup></button>`
+  ).join("");
+  cloud.querySelectorAll(".feature-cloud-tag").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const cur = $("filterFeatureKw").value;
+      $("filterFeatureKw").value = cur === btn.dataset.feature ? "" : btn.dataset.feature;
+      applyTableFilters();
+    });
+  });
 }
 
 function renderPagination() {
@@ -359,7 +412,9 @@ $("mainTable").addEventListener("click", e => {
 });
 
 // Table filter inputs
-["tableSearch", "filterHasSite", "filterHasSocial"].forEach(id => {
+["tableSearch", "filterHasSite", "filterHasSocial",
+ "filterHasServices", "filterHasFeatures",
+ "filterServiceKw", "filterFeatureKw"].forEach(id => {
   $(id).addEventListener("input", applyTableFilters);
 });
 

@@ -246,7 +246,42 @@
             <option value="no">Нет</option>
           </select>
         </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Услуги:</label>
+          <select id="filterHasServices" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option>
+            <option value="yes">Указаны</option>
+            <option value="no">Не указаны</option>
+          </select>
+        </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Особенности:</label>
+          <select id="filterHasFeatures" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option>
+            <option value="yes">Указаны</option>
+            <option value="no">Не указаны</option>
+          </select>
+        </div>
         <span class="table-count" id="tableCount"></span>
+      </div>
+
+      <!-- Service/feature keyword search row -->
+      <div class="table-controls table-controls--secondary" id="tagFiltersRow" style="display:none">
+        <div class="input-wrap" style="flex:1;max-width:320px">
+          <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+            <rect x="3" y="5" width="14" height="2" rx="1" fill="currentColor"/>
+            <rect x="5" y="9" width="10" height="2" rx="1" fill="currentColor"/>
+            <rect x="7" y="13" width="6" height="2" rx="1" fill="currentColor"/>
+          </svg>
+          <input id="filterServiceKw" class="input" type="text" placeholder="Ключевое слово в услугах…"/>
+        </div>
+        <div class="input-wrap" style="flex:1;max-width:320px">
+          <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+            <path d="M10 3l1.5 4.5H16l-3.7 2.7 1.4 4.3L10 12 6.3 14.5l1.4-4.3L4 7.5h4.5z" fill="currentColor"/>
+          </svg>
+          <input id="filterFeatureKw" class="input" type="text" placeholder="Ключевое слово в особенностях…"/>
+        </div>
+        <div id="featureTags" class="feature-tag-cloud"></div>
       </div>
 
       <div class="table-scroll" id="mainTableScroll">
@@ -261,6 +296,8 @@
               <th class="sortable" data-col="reviews">Отзывы <span class="sort-arrow">↕</span></th>
               <th>Адрес</th>
               <th>Категория</th>
+              <th>Услуги</th>
+              <th>Особенности</th>
               <th>Карты</th>
             </tr>
           </thead>

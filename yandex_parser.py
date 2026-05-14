@@ -60,6 +60,8 @@ ALL_FIELD_DEFS: OrderedDict = OrderedDict([
     ("reviews",  ("Кол-во отзывов",  16)),
     ("has_site", ("Есть сайт",       12)),
     ("map_url",  ("Ссылка на карты", 36)),
+    ("services", ("Товары и услуги", 50)),
+    ("features", ("Особенности",     45)),
 ])
 
 DEFAULT_FIELDS = list(ALL_FIELD_DEFS.keys())
@@ -249,6 +251,8 @@ def _parse_feature(feat: dict) -> dict:
         "reviews":  reviews,
         "has_site": "Да" if site != "—" else "Нет",
         "map_url":  map_url,
+        "services": "",
+        "features": "",
     }
 
 # ---------------------------------------------------------------------------
@@ -263,8 +267,10 @@ def _enrich(company: dict) -> dict:
     nso = company["social"]  == "—"
     nr  = company["rating"]  == "—"
     nrv = company["reviews"] == 0
+    nsv = not company.get("services")
+    nft = not company.get("features")
 
-    if not any([ns, nso, nr, nrv]):
+    if not any([ns, nso, nr, nrv, nsv, nft]):
         return company
 
     try:
@@ -380,6 +386,46 @@ def _enrich(company: dict) -> dict:
                 except ValueError:
                     pass
 
+    # ── 5. Товары и услуги ─────────────────────────────────────────────
+    if not company.get("services"):
+        for sel in [
+            ".business-services-item-view__name",
+            "[class*='services-item-view'] [class*='name']",
+            "[class*='service-list'] [class*='item-title']",
+        ]:
+            items = [el.get_text(strip=True) for el in soup.select(sel) if el.get_text(strip=True)]
+            if items:
+                company["services"] = ", ".join(items[:25])
+                break
+        # section-heading fallback
+        if not company.get("services"):
+            for tag in soup.find_all(True):
+                txt = tag.get_text(strip=True).lower()
+                if txt in ("товары и услуги", "услуги", "товары"):
+                    parent = tag.parent
+                    if parent:
+                        names = [el.get_text(strip=True)
+                                 for el in parent.find_all(True)
+                                 if el.get_text(strip=True) and el != tag
+                                 and len(el.get_text(strip=True)) < 80]
+                        names = [n for n in names if n.lower() not in ("товары и услуги","услуги","товары")]
+                        if names:
+                            company["services"] = ", ".join(names[:25])
+                            break
+
+    # ── 6. Особенности ────────────────────────────────────────────────
+    if not company.get("features"):
+        for sel in [
+            ".business-features-view__feature",
+            "[class*='features-view__feature']",
+            "[class*='feature-item__text']",
+            "[class*='business-feature'] span",
+        ]:
+            items = [el.get_text(strip=True) for el in soup.select(sel) if el.get_text(strip=True)]
+            if items:
+                company["features"] = ", ".join(items[:25])
+                break
+
     return company
 
 
@@ -447,6 +493,46 @@ def _apply_jsonld(company: dict, data):
                         ex_list.append(s)
                 company["social"] = ", ".join(ex_list)
 
+    # Товары и услуги: hasOfferCatalog / makesOffer
+    if not company.get("services"):
+        catalog = data.get("hasOfferCatalog") or {}
+        if isinstance(catalog, dict):
+            items = catalog.get("itemListElement") or []
+            if isinstance(items, list):
+                names = [i.get("name", "") for i in items if isinstance(i, dict) and i.get("name")]
+                if names:
+                    company["services"] = ", ".join(names[:25])
+        if not company.get("services"):
+            offers = data.get("makesOffer") or []
+            if isinstance(offers, list):
+                names = []
+                for o in offers:
+                    if not isinstance(o, dict):
+                        continue
+                    n = o.get("name") or (o.get("itemOffered") or {}).get("name", "")
+                    if n:
+                        names.append(n)
+                if names:
+                    company["services"] = ", ".join(names[:25])
+
+    # Особенности: amenityFeature
+    if not company.get("features"):
+        amenity = data.get("amenityFeature") or []
+        if isinstance(amenity, list):
+            values = []
+            for a in amenity:
+                if not isinstance(a, dict):
+                    continue
+                val = a.get("value")
+                name = a.get("name", "")
+                # Skip falsy values
+                if str(val).lower() in ("false", "0", "no", "none", ""):
+                    continue
+                if name:
+                    values.append(name)
+            if values:
+                company["features"] = ", ".join(values[:25])
+
     # Рекурсия только в @graph (явный граф сущностей), не во все поля
     graph = data.get("@graph")
     if graph:
@@ -502,6 +588,7 @@ def _scrape_page(query: str, page: int) -> list[dict]:
             "lat": "—", "lon": "—", "category": category,
             "rating": rating, "reviews": reviews,
             "has_site": "Нет", "map_url": map_url,
+            "services": "", "features": "",
         })
     return companies
 
