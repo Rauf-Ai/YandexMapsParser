@@ -30,10 +30,12 @@ from browser_fetch import fetch_rendered
 log = logging.getLogger(__name__)
 
 # Yandex avatars CDN: match business/org photo URLs.
-# Accepts any size suffix (orig, L, XL, XXL, or none) and more service prefixes.
+# Match any avatars.mds.yandex.net/get-* namespace.
+# Excludes template URLs containing { } or %s placeholders.
 _PHOTO_RE = re.compile(
-    r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc|orgs|geo)"
-    r"/\d+/[a-zA-Z0-9_\-]+(?:/(?:orig|L|XL|XXL|[a-zA-Z0-9]+))?",
+    r"https://avatars\.mds\.yandex\.net/get-[a-z][a-z\-]+"
+    r"/\d+/[a-zA-Z0-9_\-]+"
+    r"(?:/[a-zA-Z0-9_\-\.]+)?",
     re.IGNORECASE,
 )
 
@@ -161,8 +163,9 @@ def _extract_from_js_state(html: str) -> dict:
     seen_photos: set[str] = set()
 
     photo_re = re.compile(
-        r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc|orgs|geo)"
-        r"/\d+/[a-zA-Z0-9_\-]+(?:/(?:orig|L|XL|XXL|[a-zA-Z0-9]+))?",
+        r"https://avatars\.mds\.yandex\.net/get-[a-z][a-z\-]+"
+        r"/\d+/[a-zA-Z0-9_\-]+"
+        r"(?:/[a-zA-Z0-9_\-\.]+)?",
         re.IGNORECASE,
     )
 
@@ -219,13 +222,16 @@ def _extract_photo_urls(html: str, max_photos: int = 20) -> list[str]:
     def _add(raw: str):
         if len(urls) >= max_photos:
             return
-        # Normalise to largest size
-        url = re.sub(r"/(?:L|XL|XXL)(/|$)", "/orig\\1", raw)
-        if not url.endswith("/orig"):
-            url = url.rstrip("/") + "/orig"
-        parts = url.rstrip("/").split("/")
-        # Dedup by the hash segment (2nd-to-last part)
-        key = parts[-2] if len(parts) >= 2 else url
+        # Skip template URLs (placeholders like {size}, %s, {namespace})
+        if "{" in raw or "%" in raw:
+            return
+        # Normalise size to largest available
+        url = re.sub(r"/(?:S|M|L|XL|XXL|[0-9]+x[0-9]+\.[a-z]+)$", "/XXL_height", raw)
+        if not re.search(r"/(?:orig|XXL_height|XXL|XL)$", url):
+            url = url.rstrip("/") + "/XXL_height"
+        # Dedup by the hash segment (3rd segment: /get-ns/{id}/{hash}/...)
+        parts = url.split("/")
+        key = parts[5] if len(parts) > 5 else url  # hash is at index 5
         if key not in seen_keys:
             seen_keys.add(key)
             urls.append(url)
