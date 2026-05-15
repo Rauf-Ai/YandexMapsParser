@@ -25,6 +25,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 
 from yandex_parser import SESSION, _sleep, _extract_vitrina
+from browser_fetch import fetch_rendered
 
 log = logging.getLogger(__name__)
 
@@ -337,10 +338,28 @@ def collect_org_zip(
     name = company.get("name", "company")
 
     # 1 ── Main org page ───────────────────────────────────────────────
+    # Try browser-rendered version first (needed for photos and JS content).
+    # Falls back to plain requests when Playwright is unavailable or blocked.
     _emit(f"Загружаем страницу: {name}…")
-    resp  = _fetch(f"https://yandex.ru/maps/org/{oid}/") if oid else None
-    html  = resp.text if resp else ""
-    soup  = BeautifulSoup(html, "html.parser")
+    org_url = f"https://yandex.ru/maps/org/{oid}/" if oid else ""
+    html = ""
+    used_browser = False
+    if org_url:
+        _emit("Открываем браузер для загрузки фото…")
+        html = fetch_rendered(
+            org_url,
+            wait_for_selector="img[src*='avatars.mds.yandex.net']",
+            scroll_px=600,
+            extra_wait_ms=2_000,
+        )
+        if html:
+            used_browser = True
+    if not html and org_url:
+        if not used_browser:
+            _emit("Браузер недоступен, загружаем стандартным способом…")
+        resp = _fetch(org_url)
+        html = resp.text if resp else ""
+    soup   = BeautifulSoup(html, "html.parser")
     jsonld = _parse_jsonld(soup)
 
     # 2 ── Reviews page ────────────────────────────────────────────────
