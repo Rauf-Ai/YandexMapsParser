@@ -326,7 +326,7 @@ def _extract_vitrina(soup) -> tuple:
 # ---------------------------------------------------------------------------
 # Step 2 — Per-org enrichment (JSON-LD + itemprop + HTML fallback)
 # ---------------------------------------------------------------------------
-def _enrich(company: dict) -> dict:
+def _enrich(company: dict, browser_session=None) -> dict:
     oid = company.get("oid", "")
     if not oid:
         return company
@@ -502,6 +502,24 @@ def _enrich(company: dict) -> dict:
                 if txt and len(txt) < 60:
                     company["price_range"] = txt
                     break
+
+    # ── 8. Browser fallback — витрина is JS-rendered for most orgs ────
+    # Static HTML only has витрина for a minority of orgs (SSR'd by Yandex).
+    # If services still empty and a BrowserSession is provided, render the
+    # page with real Chromium to get the JS-populated showcase section.
+    if not company.get("services") and browser_session and browser_session.available:
+        rendered = browser_session.fetch(
+            f"https://yandex.ru/maps/org/{oid}/",
+            scroll_px=400,
+            wait_ms=1_500,
+        )
+        if rendered:
+            rsoup = BeautifulSoup(rendered, "html.parser")
+            svcs, pr = _extract_vitrina(rsoup)
+            if svcs:
+                company["services"] = ", ".join(svcs[:25])
+            if pr and not company.get("price_range"):
+                company["price_range"] = pr
 
     return company
 
@@ -722,6 +740,20 @@ def collect(query: str, max_companies: int = 100,
         if emit:
             emit(event, **kw)
 
+    # Start a shared browser session for JS-rendered витрина enrichment.
+    # One browser instance is reused across all companies (~2s per page vs
+    # ~4s if relaunched each time). Falls back gracefully if unavailable.
+    try:
+        from browser_fetch import BrowserSession
+        _bs = BrowserSession()
+        if _bs.start():
+            _emit("progress", found=0, total=max_companies,
+                  message="Браузер запущен для парсинга услуг…")
+        else:
+            _bs = None
+    except Exception:
+        _bs = None
+
     # When filter active we may need to scan many more raw results
     hard_cap = min(max_companies * 8, 400) if filter_fn else max_companies
 
@@ -780,7 +812,7 @@ def collect(query: str, max_companies: int = 100,
                   found=len(passed) if filter_fn else len(all_fetched),
                   total=max_companies,
                   message=f"Обогащаем: {c['name'][:40]}…")
-            c = _enrich(c)
+            c = _enrich(c, browser_session=_bs)
             _sleep(0.4, 1.2)
             all_fetched.append(c)
 
@@ -793,6 +825,9 @@ def collect(query: str, max_companies: int = 100,
         skip += 10
         page += 1
         _sleep(0.8, 2.0)
+
+    if _bs:
+        _bs.stop()
 
     return passed if filter_fn else all_fetched
 
