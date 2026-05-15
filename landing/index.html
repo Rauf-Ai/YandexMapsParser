@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Орхидея — Медицинский центр, Чебоксары</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: '#1b4f72',
+            'primary-dark': '#154360',
+            'primary-light': '#2e86c1',
+            accent: '#7d3c98',
+            'accent-light': '#a569bd',
+          },
+          fontFamily: {
+            sans: ['Inter', 'system-ui', 'sans-serif'],
+          }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>
+    html { scroll-behavior: smooth; }
+
+    .hero-bg {
+      background: linear-gradient(135deg, #0d2137 0%, #1b4f72 50%, #2c3e6e 100%);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero-bg::before {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: url('photos/photo_01.jpg') center/cover no-repeat;
+      opacity: 0.18;
+    }
+    .hero-bg::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: radial-gradient(ellipse at 30% 50%, rgba(125,60,152,0.25) 0%, transparent 60%);
+    }
+
+    .fade-in {
+      opacity: 0;
+      transform: translateY(28px);
+      transition: opacity 0.65s ease, transform 0.65s ease;
+    }
+    .fade-in.visible {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .service-card:hover {
+      transform: translateY(-4px);
+      box-shadow: 0 20px 40px rgba(27,79,114,0.15);
+    }
+    .service-card { transition: transform 0.3s ease, box-shadow 0.3s ease; }
+
+    .review-card {
+      background: #fff;
+      border-left: 4px solid #2e86c1;
+    }
+
+    .stars { color: #f39c12; }
+
+    nav a:hover { color: #7d3c98; }
+
+    .gradient-text {
+      background: linear-gradient(135deg, #2e86c1, #7d3c98);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .photo-grid img {
+      transition: transform 0.4s ease, filter 0.4s ease;
+      filter: brightness(0.95);
+    }
+    .photo-grid img:hover {
+      transform: scale(1.03);
+      filter: brightness(1.05);
+    }
+  </style>
+</head>
+<body class="font-sans text-gray-800 bg-white">
+
+<!-- ═══════════════════ STICKY HEADER ═══════════════════ -->
+<header id="header" class="fixed top-0 left-0 right-0 z-50 bg-white/95 backdrop-blur-sm shadow-sm transition-all duration-300">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 flex items-center justify-between h-16">
+    <a href="#hero" class="flex items-center gap-2 text-primary font-bold text-xl">
+      <span class="text-2xl">🌸</span>
+      <span>Орхидея</span>
+    </a>
+    <nav class="hidden md:flex items-center gap-7 text-sm font-medium text-gray-600">
+      <a href="#about" class="transition-colors">О клинике</a>
+      <a href="#services" class="transition-colors">Услуги</a>
+      <a href="#gallery" class="transition-colors">Фото</a>
+      <a href="#reviews" class="transition-colors">Отзывы</a>
+      <a href="#contacts" class="transition-colors">Контакты</a>
+    </nav>
+    <a href="tel:+78352216976"
+       class="flex items-center gap-2 bg-primary hover:bg-primary-dark text-white text-sm font-semibold px-4 py-2 rounded-full transition-colors shadow-md">
+      <i class="fa-solid fa-phone text-xs"></i>
+      Позвонить
+    </a>
+  </div>
+</header>
+
+<!-- ═══════════════════ HERO ═══════════════════ -->
+<section id="hero" class="hero-bg min-h-screen flex items-center pt-16">
+  <div class="relative z-10 max-w-6xl mx-auto px-4 sm:px-6 py-20 text-white text-center">
+    <div class="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/20 rounded-full px-4 py-1.5 text-sm mb-6 fade-in">
+      <i class="fa-solid fa-star text-yellow-400"></i>
+      <span>Медицинский центр &bull; Чебоксары</span>
+    </div>
+
+    <h1 class="text-5xl sm:text-6xl md:text-7xl font-extrabold mb-4 leading-tight fade-in" style="transition-delay:0.1s">
+      Орхидея
+    </h1>
+
+    <p class="text-xl sm:text-2xl text-blue-100 font-light mb-3 fade-in" style="transition-delay:0.2s">
+      Лазерная клиника — ваша кожа без изъянов
+    </p>
+    <p class="text-base text-white/70 mb-8 max-w-xl mx-auto fade-in" style="transition-delay:0.25s">
+      Удаление родинок, папиллом, бородавок и новообразований лазером за&nbsp;один приём
+    </p>
+
+    <!-- Rating -->
+    <div class="flex items-center justify-center gap-3 mb-10 fade-in" style="transition-delay:0.3s">
+      <div class="flex gap-1 stars text-2xl">
+        <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        <i class="fa-solid fa-star"></i>
+      </div>
+      <span class="text-white font-bold text-2xl">4.9</span>
+      <span class="text-white/60 text-sm">180 отзывов на Яндекс Картах</span>
+    </div>
+
+    <!-- CTA -->
+    <div class="flex flex-col sm:flex-row gap-4 justify-center fade-in" style="transition-delay:0.4s">
+      <a href="tel:+78352216976"
+         class="flex items-center justify-center gap-2 bg-white text-primary font-bold px-8 py-4 rounded-full text-lg shadow-xl hover:shadow-2xl hover:bg-blue-50 transition-all">
+        <i class="fa-solid fa-phone"></i> Позвонить
+      </a>
+      <a href="https://yandex.ru/maps/org/193857491204/" target="_blank"
+         class="flex items-center justify-center gap-2 bg-white/10 border border-white/30 backdrop-blur-sm text-white font-semibold px-8 py-4 rounded-full text-lg hover:bg-white/20 transition-all">
+        <i class="fa-solid fa-map-location-dot"></i> На карте
+      </a>
+    </div>
+
+    <!-- Scroll hint -->
+    <div class="absolute bottom-10 left-1/2 -translate-x-1/2 animate-bounce opacity-50">
+      <i class="fa-solid fa-chevron-down text-white text-xl"></i>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ О НАС ═══════════════════ -->
+<section id="about" class="py-20 bg-gray-50">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14 fade-in">
+      <h2 class="text-3xl sm:text-4xl font-bold text-primary mb-3">О клинике</h2>
+      <div class="w-16 h-1 bg-accent mx-auto rounded-full mb-5"></div>
+      <p class="text-gray-600 max-w-2xl mx-auto text-lg leading-relaxed">
+        Медицинский центр «Орхидея» — специализированная лазерная клиника в Чебоксарах.
+        Мы решаем эстетические и медицинские проблемы кожных новообразований за&nbsp;один приём,
+        применяя современное лазерное оборудование и индивидуальный подход к каждому пациенту.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div class="bg-white rounded-2xl p-7 text-center shadow-sm hover:shadow-md transition-shadow fade-in">
+        <div class="w-14 h-14 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <i class="fa-solid fa-user-doctor text-primary text-2xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 mb-2">Профессионализм</h3>
+        <p class="text-sm text-gray-500 leading-relaxed">Опытные врачи-онкологи и дерматологи с многолетней практикой</p>
+      </div>
+      <div class="bg-white rounded-2xl p-7 text-center shadow-sm hover:shadow-md transition-shadow fade-in" style="transition-delay:0.1s">
+        <div class="w-14 h-14 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <i class="fa-solid fa-laser text-accent text-2xl" style="font-size:1.5rem"></i>
+          <i class="fa-solid fa-wand-magic-sparkles text-accent text-2xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 mb-2">Современное оборудование</h3>
+        <p class="text-sm text-gray-500 leading-relaxed">Лазерные технологии нового поколения — безболезненно и без следов</p>
+      </div>
+      <div class="bg-white rounded-2xl p-7 text-center shadow-sm hover:shadow-md transition-shadow fade-in" style="transition-delay:0.2s">
+        <div class="w-14 h-14 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <i class="fa-solid fa-shield-heart text-green-600 text-2xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 mb-2">Безопасность</h3>
+        <p class="text-sm text-gray-500 leading-relaxed">Стерильные кабинеты, предварительная диагностика каждого новообразования</p>
+      </div>
+      <div class="bg-white rounded-2xl p-7 text-center shadow-sm hover:shadow-md transition-shadow fade-in" style="transition-delay:0.3s">
+        <div class="w-14 h-14 bg-yellow-100 rounded-full flex items-center justify-center mx-auto mb-4">
+          <i class="fa-solid fa-hand-holding-heart text-yellow-600 text-2xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 mb-2">Забота</h3>
+        <p class="text-sm text-gray-500 leading-relaxed">Подробный инструктаж по уходу и сопровождение до полного заживления</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ УСЛУГИ ═══════════════════ -->
+<section id="services" class="py-20 bg-white">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14 fade-in">
+      <h2 class="text-3xl sm:text-4xl font-bold text-primary mb-3">Наши услуги</h2>
+      <div class="w-16 h-1 bg-accent mx-auto rounded-full mb-5"></div>
+      <p class="text-gray-500">Лазерное удаление кожных новообразований — быстро, безболезненно, без следов</p>
+    </div>
+
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
+
+      <div class="service-card bg-gradient-to-br from-blue-50 to-white border border-blue-100 rounded-2xl p-7 fade-in">
+        <div class="w-12 h-12 bg-primary/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-circle-dot text-primary text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Удаление родинок</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Лазерное и хирургическое удаление невусов с предварительной онкологической диагностикой. Безопасно и без рубцов.</p>
+        <span class="text-xs font-semibold text-primary bg-blue-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+      <div class="service-card bg-gradient-to-br from-purple-50 to-white border border-purple-100 rounded-2xl p-7 fade-in" style="transition-delay:0.1s">
+        <div class="w-12 h-12 bg-accent/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-droplet text-accent text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Удаление папиллом</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Лазерное удаление папиллом и кондилом, в том числе на чувствительных участках — веках, шее, паховой зоне.</p>
+        <span class="text-xs font-semibold text-accent bg-purple-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+      <div class="service-card bg-gradient-to-br from-teal-50 to-white border border-teal-100 rounded-2xl p-7 fade-in" style="transition-delay:0.2s">
+        <div class="w-12 h-12 bg-teal-600/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-virus-slash text-teal-600 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Удаление бородавок</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Эффективное лазерное удаление обычных и подошвенных бородавок за один сеанс, включая детские случаи.</p>
+        <span class="text-xs font-semibold text-teal-700 bg-teal-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+      <div class="service-card bg-gradient-to-br from-rose-50 to-white border border-rose-100 rounded-2xl p-7 fade-in" style="transition-delay:0.1s">
+        <div class="w-12 h-12 bg-rose-500/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-heart-pulse text-rose-500 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Гемангиомы и кератомы</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Удаление сосудистых образований, кератом и себорейных бородавок лазером — точно и без повреждения здоровой кожи.</p>
+        <span class="text-xs font-semibold text-rose-600 bg-rose-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+      <div class="service-card bg-gradient-to-br from-amber-50 to-white border border-amber-100 rounded-2xl p-7 fade-in" style="transition-delay:0.2s">
+        <div class="w-12 h-12 bg-amber-500/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-layer-group text-amber-600 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Жировики и миллиумы</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Удаление атером, липом и миллиумов — закрытых комедонов под кожей. Процедура оставляет минимальный след.</p>
+        <span class="text-xs font-semibold text-amber-700 bg-amber-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+      <div class="service-card bg-gradient-to-br from-indigo-50 to-white border border-indigo-100 rounded-2xl p-7 fade-in" style="transition-delay:0.3s">
+        <div class="w-12 h-12 bg-indigo-500/10 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-stethoscope text-indigo-600 text-xl"></i>
+        </div>
+        <h3 class="font-bold text-gray-800 text-lg mb-2">Консультация онколога</h3>
+        <p class="text-gray-500 text-sm leading-relaxed mb-4">Первичный осмотр и дерматоскопия новообразований. Определение тактики лечения и необходимости удаления.</p>
+        <span class="text-xs font-semibold text-indigo-600 bg-indigo-100 px-3 py-1 rounded-full">Цена — уточняйте</span>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ ГАЛЕРЕЯ ═══════════════════ -->
+<section id="gallery" class="py-20 bg-gray-50">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14 fade-in">
+      <h2 class="text-3xl sm:text-4xl font-bold text-primary mb-3">Клиника в лицах</h2>
+      <div class="w-16 h-1 bg-accent mx-auto rounded-full"></div>
+    </div>
+
+    <div class="photo-grid grid grid-cols-2 md:grid-cols-3 gap-4 fade-in">
+      <div class="col-span-2 md:col-span-1 row-span-2 overflow-hidden rounded-2xl shadow-md">
+        <img src="photos/photo_04.jpg" alt="Команда клиники Орхидея" class="w-full h-full object-cover min-h-64">
+      </div>
+      <div class="overflow-hidden rounded-2xl shadow-md">
+        <img src="photos/photo_02.jpg" alt="Врач клиники" class="w-full h-56 object-cover object-top">
+      </div>
+      <div class="overflow-hidden rounded-2xl shadow-md">
+        <img src="photos/photo_05.jpg" alt="Приём пациента" class="w-full h-56 object-cover">
+      </div>
+      <div class="overflow-hidden rounded-2xl shadow-md">
+        <img src="photos/photo_03.jpg" alt="Здание клиники" class="w-full h-56 object-cover">
+      </div>
+      <div class="overflow-hidden rounded-2xl shadow-md">
+        <img src="photos/photo_01.jpg" alt="Коллектив клиники" class="w-full h-56 object-cover object-top">
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ ОТЗЫВЫ ═══════════════════ -->
+<section id="reviews" class="py-20 bg-white">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14 fade-in">
+      <h2 class="text-3xl sm:text-4xl font-bold text-primary mb-3">Отзывы пациентов</h2>
+      <div class="w-16 h-1 bg-accent mx-auto rounded-full mb-5"></div>
+      <div class="inline-flex items-center gap-3 bg-blue-50 border border-blue-200 rounded-full px-6 py-2">
+        <div class="flex gap-0.5 stars">
+          <i class="fa-solid fa-star text-sm"></i><i class="fa-solid fa-star text-sm"></i>
+          <i class="fa-solid fa-star text-sm"></i><i class="fa-solid fa-star text-sm"></i>
+          <i class="fa-solid fa-star text-sm"></i>
+        </div>
+        <span class="font-bold text-primary">4.9</span>
+        <span class="text-gray-500 text-sm">· 180 отзывов на Яндекс Картах</span>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Я очень благодарна за проведенную процедуру по удалению папиллом. Всё зажило быстро, и совершенно не осталось следов! Особенно переживала за веки, но аккуратность и мастерство врача сделали своё дело. Спасибо за ювелирный труд, спокойствие и уверенность!»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Альбина</span>
+        </div>
+      </div>
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in" style="transition-delay:0.1s">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Здесь решают эстетические проблемы по борьбе с кожными новообразованиями за 1 приём! Врач всё доступно объясняет, подробно рассказывает про период заживления, отвечает на все вопросы. Самые хорошие впечатления.»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Пациент клиники</span>
+        </div>
+      </div>
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in" style="transition-delay:0.2s">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Посетила центр 18 февраля. Удалил 7 родинок онколог Шариков Михаил Александрович. Каждую родинку проверил на злокачественные и доброкачественные. Он мастер своего направления — буду обращаться только к нему!»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Пациент клиники</span>
+        </div>
+      </div>
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in" style="transition-delay:0.1s">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Хотел выразить огромную благодарность коллективу «Орхидеи» за профессионализм. На протяжении 3-х сезонов удалил около 20–25 родинок. Все зажило прекрасно и быстро. Теперь наслаждаюсь чистой кожей!»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Постоянный пациент</span>
+        </div>
+      </div>
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in" style="transition-delay:0.2s">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Бесконечно благодарна Бурмистрову Евгению Александровичу. Пришла со сложной ситуацией, а он очень точно вёл меня, морально поддерживал. Все специалисты — мастера своего дела, уютная атмосфера, вежливые администраторы.»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Пациент клиники</span>
+        </div>
+      </div>
+
+      <div class="review-card rounded-2xl p-6 shadow-sm fade-in" style="transition-delay:0.3s">
+        <div class="flex gap-1 stars text-sm mb-3">
+          <i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i><i class="fa-solid fa-star"></i>
+        </div>
+        <p class="text-gray-700 text-sm leading-relaxed mb-4">«Очень хорошая клиника. Клиника располагает современным оборудованием, комфортной атмосферой. Цены адекватные. За медуслуги можно получить налоговый вычет — документы выдают сразу в день обращения.»</p>
+        <div class="flex items-center gap-2 text-gray-400 text-xs">
+          <i class="fa-solid fa-user-circle text-lg"></i>
+          <span>Пациент клиники</span>
+        </div>
+      </div>
+
+    </div>
+
+    <div class="text-center mt-10 fade-in">
+      <a href="https://yandex.ru/maps/org/193857491204/" target="_blank"
+         class="inline-flex items-center gap-2 border-2 border-primary text-primary font-semibold px-7 py-3 rounded-full hover:bg-primary hover:text-white transition-all">
+        <i class="fa-brands fa-yandex"></i>
+        Все отзывы на Яндекс Картах
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ КОНТАКТЫ ═══════════════════ -->
+<section id="contacts" class="py-20 bg-primary text-white">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6">
+    <div class="text-center mb-14 fade-in">
+      <h2 class="text-3xl sm:text-4xl font-bold mb-3">Контакты</h2>
+      <div class="w-16 h-1 bg-accent-light mx-auto rounded-full"></div>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
+
+      <!-- Address -->
+      <div class="bg-white/10 backdrop-blur-sm rounded-2xl p-7 fade-in">
+        <div class="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-map-location-dot text-white text-xl"></i>
+        </div>
+        <h3 class="font-bold text-white mb-2 text-lg">Адрес</h3>
+        <p class="text-blue-100 text-sm leading-relaxed">г. Чебоксары,<br>ул. Шумилова, д. 30, корп. 1<br>
+          <span class="text-white/50 text-xs mt-1 block">7 минут пешком от остановки</span>
+        </p>
+        <a href="https://yandex.ru/maps/org/193857491204/" target="_blank"
+           class="mt-4 inline-flex items-center gap-1 text-sm text-blue-200 hover:text-white underline underline-offset-2 transition-colors">
+          Открыть в Яндекс Картах <i class="fa-solid fa-arrow-up-right-from-square text-xs"></i>
+        </a>
+      </div>
+
+      <!-- Phone -->
+      <div class="bg-white/10 backdrop-blur-sm rounded-2xl p-7 fade-in" style="transition-delay:0.1s">
+        <div class="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-solid fa-phone text-white text-xl"></i>
+        </div>
+        <h3 class="font-bold text-white mb-2 text-lg">Телефоны</h3>
+        <div class="space-y-2">
+          <a href="tel:+78352216976" class="flex items-center gap-2 text-blue-100 hover:text-white transition-colors text-sm group">
+            <i class="fa-solid fa-phone-flip text-xs group-hover:text-white"></i>
+            +7 (835) 221-69-76
+          </a>
+          <a href="tel:+79003331551" class="flex items-center gap-2 text-blue-100 hover:text-white transition-colors text-sm group">
+            <i class="fa-solid fa-mobile-screen-button text-xs group-hover:text-white"></i>
+            +7 (900) 333-15-51
+          </a>
+        </div>
+        <a href="tel:+78352216976"
+           class="mt-5 flex items-center justify-center gap-2 bg-white text-primary font-bold px-5 py-2.5 rounded-full text-sm hover:bg-blue-50 transition-colors shadow-lg">
+          <i class="fa-solid fa-phone"></i> Позвонить сейчас
+        </a>
+      </div>
+
+      <!-- Hours + Social -->
+      <div class="bg-white/10 backdrop-blur-sm rounded-2xl p-7 fade-in" style="transition-delay:0.2s">
+        <div class="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center mb-4">
+          <i class="fa-regular fa-clock text-white text-xl"></i>
+        </div>
+        <h3 class="font-bold text-white mb-2 text-lg">Часы работы</h3>
+        <div class="space-y-1 text-sm text-blue-100 mb-5">
+          <div class="flex justify-between">
+            <span>Пн — Пт</span>
+            <span class="text-white font-medium">9:00 — 19:00</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Суббота</span>
+            <span class="text-white font-medium">9:00 — 15:00</span>
+          </div>
+          <div class="flex justify-between">
+            <span>Воскресенье</span>
+            <span class="text-white/50">Выходной</span>
+          </div>
+        </div>
+        <h3 class="font-bold text-white mb-3 text-sm uppercase tracking-wide">Мы в соцсетях</h3>
+        <div class="flex gap-3">
+          <a href="https://vk.com/lasercliniccheb" target="_blank"
+             class="w-9 h-9 bg-white/20 hover:bg-blue-500 rounded-full flex items-center justify-center transition-colors" title="ВКонтакте">
+            <i class="fa-brands fa-vk text-white"></i>
+          </a>
+          <a href="https://ok.ru/lasercliniccheb" target="_blank"
+             class="w-9 h-9 bg-white/20 hover:bg-orange-500 rounded-full flex items-center justify-center transition-colors" title="Одноклассники">
+            <i class="fa-brands fa-odnoklassniki text-white"></i>
+          </a>
+          <a href="https://t.me/lazerclinic_orchidea" target="_blank"
+             class="w-9 h-9 bg-white/20 hover:bg-sky-500 rounded-full flex items-center justify-center transition-colors" title="Telegram">
+            <i class="fa-brands fa-telegram text-white"></i>
+          </a>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Map CTA -->
+    <div class="text-center fade-in">
+      <a href="https://yandex.ru/maps/org/193857491204/" target="_blank"
+         class="inline-flex items-center gap-2 bg-accent hover:bg-accent-light text-white font-bold px-8 py-4 rounded-full text-lg shadow-xl transition-all hover:shadow-2xl">
+        <i class="fa-solid fa-map-location-dot"></i>
+        Открыть в Яндекс Картах
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ═══════════════════ FOOTER ═══════════════════ -->
+<footer class="bg-gray-900 text-gray-400 py-8">
+  <div class="max-w-6xl mx-auto px-4 sm:px-6 flex flex-col sm:flex-row items-center justify-between gap-4">
+    <div class="flex items-center gap-2 text-white font-bold text-lg">
+      <span>🌸</span> Орхидея
+    </div>
+    <p class="text-sm text-center">© 2025 Медицинский центр «Орхидея». Чебоксары.</p>
+    <div class="flex gap-3">
+      <a href="https://vk.com/lasercliniccheb" target="_blank" class="hover:text-white transition-colors">
+        <i class="fa-brands fa-vk text-lg"></i>
+      </a>
+      <a href="https://ok.ru/lasercliniccheb" target="_blank" class="hover:text-white transition-colors">
+        <i class="fa-brands fa-odnoklassniki text-lg"></i>
+      </a>
+      <a href="https://t.me/lazerclinic_orchidea" target="_blank" class="hover:text-white transition-colors">
+        <i class="fa-brands fa-telegram text-lg"></i>
+      </a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // IntersectionObserver — плавное появление секций
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.12 });
+
+  document.querySelectorAll('.fade-in').forEach(el => observer.observe(el));
+
+  // Тень хедера при скролле
+  window.addEventListener('scroll', () => {
+    const header = document.getElementById('header');
+    if (window.scrollY > 20) {
+      header.classList.add('shadow-md');
+    } else {
+      header.classList.remove('shadow-md');
+    }
+  });
+</script>
+</body>
+</html>
