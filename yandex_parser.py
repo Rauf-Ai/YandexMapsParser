@@ -287,12 +287,19 @@ def _extract_vitrina(soup) -> tuple:
     services: list[str] = []
     prices: list[int] = []
     seen: set[str] = set()
-    _skip = {"обзор", "фото", "отзывы", "контакты", "маршрут",
-             "позвонить", "записаться"}
+    _skip = {
+        "обзор", "фото", "отзывы", "контакты", "маршрут",
+        "позвонить", "записаться", "все товары и услуги",
+        "встречайте ленту", "toll road", "платная дорога",
+        "посмотреть все", "показать все",
+    }
 
     for raw_name, raw_price in pairs[:20]:
         name = raw_name.strip().rstrip(" \t\n\r")
         if not name or name.lower() in _skip or len(name) < 3:
+            continue
+        # Skip template placeholders and non-service strings
+        if "{" in name or ":" in name:
             continue
         price_str = raw_price.replace("\xa0", " ").strip()
         label = f"{name} — {price_str}"

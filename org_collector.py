@@ -125,10 +125,16 @@ def _extract_org_details(soup, jsonld_blocks: list) -> dict:
                     oh = (entity.get("openingHours")
                           or entity.get("openingHoursSpecification"))
                     if oh:
-                        info["hours"] = (
-                            "; ".join(str(h) for h in oh)
-                            if isinstance(oh, list) else str(oh)
-                        )[:400]
+                        if isinstance(oh, list):
+                            # Dedup while preserving order
+                            seen_h: list[str] = []
+                            for h in oh:
+                                s = str(h)
+                                if s not in seen_h:
+                                    seen_h.append(s)
+                            info["hours"] = "; ".join(seen_h)[:400]
+                        else:
+                            info["hours"] = str(oh)[:400]
 
     if not info["description"]:
         for sel in [
@@ -186,28 +192,23 @@ def _extract_from_js_state(html: str) -> dict:
                     url = url.rstrip("/") + "/orig"
                 result["photos"].append(url)
 
-        # Services: look for showcase / catalog item titles in JSON
+        # Services: only extract title+price pairs from showcase/catalog sections.
+        # Plain title search is too noisy — it picks up competitor names, map
+        # widget labels ("Toll road: {price}"), org names, and UI strings.
         if not result["services"] and (
             "showcase" in t.lower() or "catalog" in t.lower() or "offer" in t.lower()
         ):
-            # Grab title strings near price values (витрина pattern)
             for m in re.finditer(
                 r'"(?:title|name)"\s*:\s*"([^"]{3,80})"[^}]{0,200}?"price"\s*:\s*(\d+)',
-                t
+                t,
             ):
                 item_name = m.group(1)
-                price = m.group(2)
-                if item_name and item_name not in result["services"]:
-                    result["services"].append(f"{item_name} {int(price):,} ₽".replace(",", " "))
-            # Also try plain title list without prices
-            if not result["services"]:
-                for m in re.finditer(r'"title"\s*:\s*"([^"]{5,80})"', t):
-                    item_name = m.group(1)
-                    skip_words = {"обзор", "фото", "отзывы", "контакты", "услуги",
-                                  "информация", "маршрут", "акции"}
-                    if item_name.lower() not in skip_words:
-                        result["services"].append(item_name)
-                result["services"] = result["services"][:25]
+                price = int(m.group(2))
+                if price > 0 and item_name and "{" not in item_name:
+                    label = f"{item_name} {price:,} ₽".replace(",", " ")
+                    if label not in result["services"]:
+                        result["services"].append(label)
+            result["services"] = result["services"][:25]
 
         if len(result["photos"]) >= 20:
             break
@@ -308,9 +309,23 @@ def _extract_news(soup, extra_html: str = "") -> list[dict]:
             page_text,
         ):
             candidate = m.group(1).strip()
-            # Skip navigation blobs (they contain multiple tab names)
-            skip_markers = ("Обзор", "ПоискМаршруты", "Товары и услуги", "Витрина")
+            # Skip navigation blobs and review statistics
+            skip_markers = ("Обзор", "ПоискМаршруты", "Товары и услуги", "Витрина",
+                            "положительный", "отрицательный", "Рейтинг", "оценок")
             if any(mk in candidate for mk in skip_markers):
+                continue
+            # Skip review-statistics pattern: "Чистота•100%" etc.
+            if re.search(r'[•]\d+%|%положительный|%отрицательный|\d+ отзыв', candidate):
+                continue
+            # Only keep if it has a real promo context, not just a random ₽ price
+            promo_words = {"скидк", "акци", "вместо", "бесплатн", "подарок",
+                           "all on", "только до", "предложени", "promotio"}
+            has_promo = any(w in candidate.lower() for w in promo_words)
+            has_rub = "₽" in candidate
+            has_pct = "%" in candidate
+            # Must have ₽ with promo context, OR % with promo context
+            if not ((has_rub and has_promo) or (has_pct and has_promo) or
+                    (has_rub and len(candidate) < 120)):
                 continue
             # Strip leading "Акция"/"Реклама" labels and trailing "Реклама"
             candidate = re.sub(r'^(Акция|Новость|Скидка)\s*', '', candidate).strip()
@@ -575,7 +590,9 @@ def _make_prompt(info: dict, reviews: list, news: list) -> str:
     except Exception:
         stars = ""
 
-    phone_clean = re.sub(r"[^+\d]", "", str(info.get("phone", "")))
+    # Use only the first phone number for the tel: link
+    first_phone = str(info.get("phone", "")).split(",")[0].strip()
+    phone_clean = re.sub(r"[^+\d]", "", first_phone)
 
     return f"""\
 # Создай лендинг для «{info['name']}»
