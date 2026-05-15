@@ -225,10 +225,13 @@ def _extract_photo_urls(html: str, max_photos: int = 20) -> list[str]:
         # Skip template URLs (placeholders like {size}, %s, {namespace})
         if "{" in raw or "%" in raw:
             return
-        # Normalise size to largest available
-        url = re.sub(r"/(?:S|M|L|XL|XXL|[0-9]+x[0-9]+\.[a-z]+)$", "/XXL_height", raw)
-        if not re.search(r"/(?:orig|XXL_height|XXL|XL)$", url):
-            url = url.rstrip("/") + "/XXL_height"
+        # Strip any trailing size suffix, then append best quality
+        # Covers: orig, L, XL, XXL, L_height, XL_height, XXL_height, 426x240.jpeg
+        url = re.sub(
+            r"/(?:orig|[SMLX]+(?:_height)?|[0-9]+x[0-9]+(?:\.[a-z]+)?)$",
+            "",
+            raw.rstrip("/"),
+        ) + "/XXL_height"
         # Dedup by the hash segment (3rd segment: /get-ns/{id}/{hash}/...)
         parts = url.split("/")
         key = parts[5] if len(parts) > 5 else url  # hash is at index 5
