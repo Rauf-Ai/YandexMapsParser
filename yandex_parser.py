@@ -259,6 +259,64 @@ def _parse_feature(feat: dict) -> dict:
     }
 
 # ---------------------------------------------------------------------------
+# Витрина (showcase) text parser
+# ---------------------------------------------------------------------------
+def _extract_vitrina(soup) -> tuple:
+    """
+    Parse service names and prices from the 'Витрина' section of a Yandex Maps
+    page. Returns (services_list, price_range_str).
+
+    Yandex renders the showcase as a React component — no CSS class handles it.
+    The data IS present in the server-side rendered plain text as:
+      "Витрина<name1><price1>₽<name2><price2>₽..."
+    where price digits immediately follow the name without a separator.
+    """
+    text = soup.get_text(strip=True)
+    m = re.search(r'Витрин[аы](.{10,3000})', text)
+    if not m:
+        return [], ""
+
+    section = m.group(1)
+
+    # Match: Cyrillic-starting name (no digits/₽) immediately followed by price
+    pairs = re.findall(
+        r'([А-ЯЁа-яё][^\d₽]{2,100}?)(\d[\d\s\xa0]{0,15}₽)',
+        section,
+    )
+
+    services: list[str] = []
+    prices: list[int] = []
+    seen: set[str] = set()
+    _skip = {"обзор", "фото", "отзывы", "контакты", "маршрут",
+             "позвонить", "записаться"}
+
+    for raw_name, raw_price in pairs[:20]:
+        name = raw_name.strip().rstrip(" \t\n\r")
+        if not name or name.lower() in _skip or len(name) < 3:
+            continue
+        price_str = raw_price.replace("\xa0", " ").strip()
+        label = f"{name} — {price_str}"
+        if label in seen:
+            continue
+        seen.add(label)
+        services.append(label)
+        try:
+            prices.append(int(re.sub(r"[^\d]", "", price_str)))
+        except ValueError:
+            pass
+
+    price_range = ""
+    if prices:
+        mn, mx = min(prices), max(prices)
+        if mn == mx:
+            price_range = f"{mn:,} ₽".replace(",", " ")
+        else:
+            price_range = f"от {mn:,} ₽".replace(",", " ")
+
+    return services, price_range
+
+
+# ---------------------------------------------------------------------------
 # Step 2 — Per-org enrichment (JSON-LD + itemprop + HTML fallback)
 # ---------------------------------------------------------------------------
 def _enrich(company: dict) -> dict:
@@ -391,31 +449,17 @@ def _enrich(company: dict) -> dict:
                     pass
 
     # ── 5. Товары и услуги ─────────────────────────────────────────────
-    # NOTE: Yandex Maps renders services via React; static CSS selectors may
-    # be empty — rely primarily on JSON-LD hasOfferCatalog (in _apply_jsonld).
-    _SVC_BLACKLIST = {
-        "обзор", "фото", "отзывы", "условия", "информация",
-        "товары и услуги", "услуги", "контакты",
-        "колл-центр", "позвонить", "написать", "маршрут",
-        "поделиться", "записаться", "забронировать", "заказать",
-    }
+    # Yandex Maps renders most content via React — CSS selectors are empty.
+    # Primary source: JSON-LD hasOfferCatalog (handled in _apply_jsonld).
+    # Fallback: parse the "Витрина" (showcase) section from page plain text.
     if not company.get("services"):
-        for sel in [
-            ".business-services-item-view__name",
-            "[class*='services-item-view'] [class*='name']",
-            ".card-feature-view__title",
-        ]:
-            items = [el.get_text(strip=True) for el in soup.select(sel)
-                     if el.get_text(strip=True) and len(el.get_text(strip=True)) < 100]
-            items = [x for x in items if x.lower() not in _SVC_BLACKLIST]
-            if items:
-                company["services"] = ", ".join(items[:25])
-                break
+        svcs, pr = _extract_vitrina(soup)
+        if svcs:
+            company["services"] = ", ".join(svcs[:25])
+        if pr and not company.get("price_range"):
+            company["price_range"] = pr
 
     # ── 6. Особенности ────────────────────────────────────────────────
-    # Only use narrow, proven selectors.  The broad [class*='business-feature']
-    # span selector matched price tables, category chips, and value spans
-    # ("доступно") from the accessibility block — removed entirely.
     _FTR_VALUE_WORDS = {"доступно", "недоступно", "да", "нет", "yes", "no", "true", "false"}
     if not company.get("features"):
         for sel in [
@@ -427,24 +471,23 @@ def _enrich(company: dict) -> dict:
                 t = el.get_text(strip=True)
                 if not t:
                     continue
-                if "₽" in t or "руб" in t.lower():   # price item
+                if "₽" in t or "руб" in t.lower():
                     continue
-                if t.lower() in _FTR_VALUE_WORDS:      # bare value word
+                if t.lower() in _FTR_VALUE_WORDS:
                     continue
-                if len(t) > 70:                         # too long
+                if len(t) > 70:
                     continue
                 items.append(t)
             if items:
                 company["features"] = ", ".join(items[:25])
                 break
 
-    # ── 7. Цены ───────────────────────────────────────────────────────
+    # ── 7. Цены (CSS fallback, JSON-LD + витрина handled above) ───────
     if not company.get("price_range"):
         for sel in [
             ".business-prices-view__text",
             "[class*='price-view__text']",
             "[itemprop='priceRange']",
-            "[class*='business-price'] [class*='value']",
         ]:
             el = soup.select_one(sel)
             if el:

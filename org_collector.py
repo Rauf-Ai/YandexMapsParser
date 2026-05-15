@@ -24,7 +24,7 @@ from pathlib import Path
 
 from bs4 import BeautifulSoup
 
-from yandex_parser import SESSION, _sleep
+from yandex_parser import SESSION, _sleep, _extract_vitrina
 
 log = logging.getLogger(__name__)
 
@@ -289,16 +289,25 @@ def _extract_news(soup, extra_html: str = "") -> list[dict]:
                     seen.add(text)
                     news.append({"text": text[:500]})
 
-        # Also try to find promotions from JSON state embedded in page scripts
-        for sc in s.find_all("script"):
-            t = sc.string or ""
-            if len(t) < 100 or "action" not in t.lower():
+        # Extract promo items from page plain text using known patterns.
+        # Yandex renders promos as React components — no CSS class is reliable.
+        page_text = s.get_text(strip=True)
+        # Pattern: text with price/discount markers (₽, скидка, вместо, %)
+        for m in re.finditer(
+            r'([А-ЯЁа-яёA-Za-z0-9][^₽\n]{5,200}(?:₽|скидк|акци|вместо|%)[^₽\n]{0,100})',
+            page_text,
+        ):
+            candidate = m.group(1).strip()
+            # Skip navigation blobs (they contain multiple tab names)
+            skip_markers = ("Обзор", "ПоискМаршруты", "Товары и услуги", "Витрина")
+            if any(mk in candidate for mk in skip_markers):
                 continue
-            for m in re.finditer(r'"title"\s*:\s*"([^"]{5,200})"', t):
-                text = m.group(1)
-                if text not in seen:
-                    seen.add(text)
-                    news.append({"text": text[:500]})
+            # Strip leading "Акция"/"Реклама" labels and trailing "Реклама"
+            candidate = re.sub(r'^(Акция|Новость|Скидка)\s*', '', candidate).strip()
+            candidate = re.sub(r'\s*Реклама\s*$', '', candidate).strip()
+            if len(candidate) > 10 and candidate not in seen:
+                seen.add(candidate)
+                news.append({"text": candidate[:500]})
             if len(news) >= 20:
                 break
 
@@ -402,8 +411,15 @@ def collect_org_zip(
     _emit(f"Акций/новостей: {len(news)}")
 
     # 6 ── Build full info dict ────────────────────────────────────────
-    # Use JS-state services as fallback when yandex_parser enrichment was empty
+    # Use витрина parser then JS-state as fallbacks for services
     services = company.get("services", "")
+    price_range = company.get("price_range", "")
+    if not services:
+        vitrina_svcs, vitrina_pr = _extract_vitrina(soup)
+        if vitrina_svcs:
+            services = ", ".join(vitrina_svcs[:25])
+        if vitrina_pr and not price_range:
+            price_range = vitrina_pr
     if not services and js_data.get("services"):
         services = ", ".join(js_data["services"][:25])
 
@@ -418,7 +434,7 @@ def collect_org_zip(
         "reviews_count": company.get("reviews",     0),
         "services":      services,
         "features":      company.get("features",    ""),
-        "price_range":   company.get("price_range", ""),
+        "price_range":   price_range,
         "map_url":       company.get("map_url",     ""),
         "lat":           company.get("lat",         ""),
         "lon":           company.get("lon",         ""),
