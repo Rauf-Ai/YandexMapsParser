@@ -146,6 +146,38 @@ def diagnose_company(company: dict, show_jsonld: bool = False):
                 imgs = img if isinstance(img, list) else [img]
                 print(f"      image ({len(imgs)}): {str(imgs[0])[:80]}")
 
+    # — Поиск элементов по ключевым словам (находит правильные CSS классы) ──────
+    print(f"\n  {cyan('Поиск элементов по ключевым словам:')}")
+    keywords = ["Витрин", "showcase", "Имплант", "Стрижк", "Кофе",
+                "Акци", "story", "promo", "action", "news"]
+    for kw in keywords:
+        for el in soup.find_all(True):
+            text = el.get_text(strip=True)
+            cls  = " ".join(el.get("class") or [])
+            if kw.lower() in text[:80].lower() and len(text) < 200 and cls:
+                print(f"    [{kw}] <{el.name} class={cls!r:.60s}> → {text[:60]!r}")
+                break  # только первое совпадение на ключевое слово
+
+    # Dump all unique class names containing 'showcase','service','feature','story','promo'
+    print(f"\n  {cyan('Уникальные CSS классы (showcase/service/feature/story/promo):')}")
+    interesting = set()
+    for el in soup.find_all(True):
+        for cls in (el.get("class") or []):
+            if any(p in cls.lower() for p in
+                   ["showcase", "service", "feature", "story", "promo",
+                    "action", "news", "price", "vitrin"]):
+                interesting.add(cls)
+    for cls in sorted(interesting):
+        print(f"    .{cls}")
+
+    # Найти скрипты с JSON-данными (начальный стейт страницы — там могут быть фото)
+    print(f"\n  {cyan('Script-теги с JSON (ищем фото/услуги):')} ")
+    for sc in soup.find_all("script"):
+        t = sc.string or ""
+        if len(t) > 200 and any(w in t for w in
+                                 ["avatars.mds", "photo", "showcase", "amenity"]):
+            print(f"    <script> len={len(t)}  preview={t[50:130]!r}")
+
     # — CSS selectors: что реально есть в HTML ────────────────────────────────
     print(f"\n  {cyan('CSS-селекторы (что реально в HTML):')} ")
 
