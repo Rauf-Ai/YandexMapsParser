@@ -150,6 +150,67 @@ def _extract_org_details(soup, jsonld_blocks: list) -> dict:
     return info
 
 
+def _extract_from_js_state(html: str) -> dict:
+    """
+    Yandex Maps embeds org data in script tags as JSON (SSR state).
+    Try to extract photo URLs, services, and features from those scripts.
+    Returns dict with keys: photos, services, features.
+    """
+    result: dict = {"photos": [], "services": [], "features": []}
+    seen_photos: set[str] = set()
+
+    photo_re = re.compile(
+        r"https://avatars\.mds\.yandex\.net/get-(?:bizdir|sprav|maps|ymaps|ugc|orgs|geo)"
+        r"/\d+/[a-zA-Z0-9_\-]+(?:/(?:orig|L|XL|XXL|[a-zA-Z0-9]+))?",
+        re.IGNORECASE,
+    )
+
+    for sc_match in re.finditer(r"<script[^>]*>(.*?)</script>", html, re.DOTALL):
+        t = sc_match.group(1)
+        if len(t) < 200:
+            continue
+
+        # Photos: grab all CDN URLs from script content
+        for m in photo_re.finditer(t):
+            url = m.group(0)
+            key = url.rstrip("/").split("/")[-2] if "/" in url else url
+            if key not in seen_photos:
+                seen_photos.add(key)
+                # Normalise to /orig
+                url = re.sub(r"/(?:L|XL|XXL)(/|$)", "/orig\\1", url)
+                if not url.endswith("/orig"):
+                    url = url.rstrip("/") + "/orig"
+                result["photos"].append(url)
+
+        # Services: look for showcase / catalog item titles in JSON
+        if not result["services"] and (
+            "showcase" in t.lower() or "catalog" in t.lower() or "offer" in t.lower()
+        ):
+            # Grab title strings near price values (витрина pattern)
+            for m in re.finditer(
+                r'"(?:title|name)"\s*:\s*"([^"]{3,80})"[^}]{0,200}?"price"\s*:\s*(\d+)',
+                t
+            ):
+                item_name = m.group(1)
+                price = m.group(2)
+                if item_name and item_name not in result["services"]:
+                    result["services"].append(f"{item_name} {int(price):,} ₽".replace(",", " "))
+            # Also try plain title list without prices
+            if not result["services"]:
+                for m in re.finditer(r'"title"\s*:\s*"([^"]{5,80})"', t):
+                    item_name = m.group(1)
+                    skip_words = {"обзор", "фото", "отзывы", "контакты", "услуги",
+                                  "информация", "маршрут", "акции"}
+                    if item_name.lower() not in skip_words:
+                        result["services"].append(item_name)
+                result["services"] = result["services"][:25]
+
+        if len(result["photos"]) >= 20:
+            break
+
+    return result
+
+
 def _extract_photo_urls(html: str, max_photos: int = 20) -> list[str]:
     seen_keys: set[str] = set()
     urls: list[str] = []
@@ -211,6 +272,7 @@ def _extract_news(soup, extra_html: str = "") -> list[dict]:
     if extra_html:
         soups.append(BeautifulSoup(extra_html, "html.parser"))
     for s in soups:
+        # Narrow selectors only — broad [class*='promo'] matches entire page body
         for sel in [
             "[class*='story-view__title']",
             "[class*='promotion-view__title']",
@@ -218,13 +280,28 @@ def _extract_news(soup, extra_html: str = "") -> list[dict]:
             "[class*='news-view__title']",
             "[class*='story-snippet__title']",
             "[class*='action-snippet__title']",
-            "[class*='promo']",
+            "[class*='promo-item__title']",
+            "[class*='promo-card__title']",
         ]:
             for el in s.select(sel):
                 text = el.get_text(strip=True)
-                if text and len(text) > 5 and text not in seen:
+                if text and len(text) > 5 and len(text) < 500 and text not in seen:
                     seen.add(text)
                     news.append({"text": text[:500]})
+
+        # Also try to find promotions from JSON state embedded in page scripts
+        for sc in s.find_all("script"):
+            t = sc.string or ""
+            if len(t) < 100 or "action" not in t.lower():
+                continue
+            for m in re.finditer(r'"title"\s*:\s*"([^"]{5,200})"', t):
+                text = m.group(1)
+                if text not in seen:
+                    seen.add(text)
+                    news.append({"text": text[:500]})
+            if len(news) >= 20:
+                break
+
     return news[:20]
 
 
@@ -278,13 +355,27 @@ def collect_org_zip(
 
     # 4 ── Photo URLs ──────────────────────────────────────────────────
     _emit("Ищем фотографии…")
-    photo_urls = _extract_photo_urls(html, max_photos)
+
+    # Primary: extract from embedded JS state (richest source in React SPA)
+    js_data = _extract_from_js_state(html)
+    photo_urls: list[str] = js_data["photos"][:max_photos]
+
+    # Supplement with regex scan of raw HTML for CDN URLs
+    if len(photo_urls) < max_photos:
+        extra = _extract_photo_urls(html, max_photos - len(photo_urls))
+        seen = set(photo_urls)
+        for u in extra:
+            if u not in seen:
+                photo_urls.append(u)
+                seen.add(u)
 
     # Supplement from JSON-LD image fields
     if len(photo_urls) < max_photos:
+        seen = set(photo_urls)
         for url in _extract_photo_urls_from_jsonld(jsonld):
-            if url not in photo_urls:
+            if url not in seen:
                 photo_urls.append(url)
+                seen.add(url)
                 if len(photo_urls) >= max_photos:
                     break
 
@@ -295,16 +386,6 @@ def collect_org_zip(
             og_url = og.get("content", "")
             if og_url.startswith("http") and og_url not in photo_urls:
                 photo_urls.append(og_url)
-
-    # Fetch the /photos/ sub-page for additional CDN URLs
-    if len(photo_urls) < max_photos and oid:
-        _sleep(0.3, 0.6)
-        phresp = _fetch(f"https://yandex.ru/maps/org/{oid}/photos/")
-        if phresp:
-            extra = _extract_photo_urls(phresp.text, max_photos - len(photo_urls))
-            for url in extra:
-                if url not in photo_urls:
-                    photo_urls.append(url)
 
     photo_urls = photo_urls[:max_photos]
     _emit(f"Фотографий найдено: {len(photo_urls)}")
@@ -321,6 +402,11 @@ def collect_org_zip(
     _emit(f"Акций/новостей: {len(news)}")
 
     # 6 ── Build full info dict ────────────────────────────────────────
+    # Use JS-state services as fallback when yandex_parser enrichment was empty
+    services = company.get("services", "")
+    if not services and js_data.get("services"):
+        services = ", ".join(js_data["services"][:25])
+
     info = {
         "name":          name,
         "category":      company.get("category",    ""),
@@ -330,7 +416,7 @@ def collect_org_zip(
         "social":        company.get("social",      ""),
         "rating":        company.get("rating",      ""),
         "reviews_count": company.get("reviews",     0),
-        "services":      company.get("services",    ""),
+        "services":      services,
         "features":      company.get("features",    ""),
         "price_range":   company.get("price_range", ""),
         "map_url":       company.get("map_url",     ""),
