@@ -272,11 +272,33 @@ def _extract_vitrina(soup) -> tuple:
     where price digits immediately follow the name without a separator.
     """
     text = soup.get_text(strip=True)
-    m = re.search(r'Витрин[аы](.{10,3000})', text)
-    if not m:
-        return [], ""
 
-    section = m.group(1)
+    _SECTION_RE = re.compile(
+        r'(?:Витрин[аы]|Товары\s+и\s+услуги|Прайс(?:-лист)?|'
+        r'Цены|Услуги|Прейскурант|Стоимость\s+услуг)'
+        r'(.{10,3000})',
+        re.IGNORECASE,
+    )
+    m = _SECTION_RE.search(text)
+    if m:
+        section = m.group(1)
+    else:
+        # Fallback: find first 800-char window with ≥3 name+price pairs
+        _PRICE_PAIR_RE = re.compile(
+            r'[А-ЯЁа-яё][^\d₽]{2,80}?\d[\d\s\xa0]{0,15}₽'
+        )
+        pos = 0
+        section = ""
+        while pos < len(text) - 100:
+            window = text[pos:pos + 800]
+            matches = list(_PRICE_PAIR_RE.finditer(window))
+            if len(matches) >= 3:
+                # Start section at the first pair to avoid capturing preamble text
+                section = window[matches[0].start():]
+                break
+            pos += 200
+        if not section:
+            return [], ""
 
     # Match: Cyrillic-starting name (no digits/₽) immediately followed by price
     pairs = re.findall(
@@ -294,7 +316,7 @@ def _extract_vitrina(soup) -> tuple:
         "посмотреть все", "показать все",
     }
 
-    for raw_name, raw_price in pairs[:20]:
+    for raw_name, raw_price in pairs[:25]:
         name = raw_name.strip().rstrip(" \t\n\r")
         if not name or name.lower() in _skip or len(name) < 3:
             continue
