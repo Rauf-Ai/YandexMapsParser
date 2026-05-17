@@ -1,7 +1,7 @@
 "use strict";
 
-// ── Field definitions ────────────────────────────────────────────────────
-const FIELD_DEFS = {
+// ── Field definitions per source ────────────────────────────────────────
+const FIELD_DEFS_YANDEX = {
   name: "Название", phone: "Телефон", site: "Сайт",
   social: "Социальные сети", address: "Адрес",
   lat: "Широта", lon: "Долгота", category: "Категория",
@@ -10,9 +10,31 @@ const FIELD_DEFS = {
   services: "Товары и услуги", features: "Особенности",
   price_range: "Цены",
 };
+const FIELD_DEFS_2GIS = {
+  name: "Название", phone: "Телефон", site: "Сайт",
+  social: "Соцсети", address: "Адрес",
+  lat: "Широта", lon: "Долгота", category: "Категория",
+  rating: "Рейтинг", reviews: "Кол-во отзывов",
+  hours: "Часы работы", description: "Описание",
+  services: "Услуги", features: "Особенности",
+  has_site: "Есть сайт", map_url: "Ссылка на 2ГИС",
+};
+const FIELD_DEFS_BOTH = {
+  name: "Название", source_name: "Источник", phone: "Телефон", site: "Сайт",
+  social: "Соцсети", address: "Адрес",
+  lat: "Широта", lon: "Долгота", category: "Категория",
+  rating: "Рейтинг", reviews: "Кол-во отзывов",
+  hours: "Часы работы", description: "Описание",
+  services: "Услуги / Товары", features: "Особенности",
+  price_range: "Цены", has_site: "Есть сайт", map_url: "Ссылка на карты",
+};
+
+// Active field defs (switches with source)
+let FIELD_DEFS = FIELD_DEFS_YANDEX;
 const ALWAYS_ON = new Set(["name"]);
 
 // ── App state ────────────────────────────────────────────────────────────
+let currentSource       = "yandex";
 let selectedFields      = new Set(Object.keys(FIELD_DEFS));
 let currentSSE          = null;
 let currentJobId        = null;
@@ -65,6 +87,31 @@ $("logoLink").addEventListener("click", e => {
 document.addEventListener("DOMContentLoaded", () => {
   buildFieldsGrid();
   loadHistory();
+
+  // Source toggle
+  document.querySelectorAll(".source-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".source-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentSource = btn.dataset.src;
+      if (currentSource === "yandex") {
+        FIELD_DEFS = FIELD_DEFS_YANDEX;
+        $("cardTitle").textContent = "Сбор компаний с Яндекс Карт";
+        $("cardSub").textContent   = "Выберите категорию и город или введите запрос вручную";
+      } else if (currentSource === "2gis") {
+        FIELD_DEFS = FIELD_DEFS_2GIS;
+        $("cardTitle").textContent = "Сбор компаний с 2ГИС";
+        $("cardSub").textContent   = "Выберите категорию и город или введите запрос вручную";
+      } else {
+        FIELD_DEFS = FIELD_DEFS_BOTH;
+        $("cardTitle").textContent = "Сбор компаний с Яндекс Карт + 2ГИС";
+        $("cardSub").textContent   = "Запрос отправляется в оба источника, результаты объединяются";
+      }
+      selectedFields = new Set(Object.keys(FIELD_DEFS));
+      buildFieldsGrid();
+    });
+  });
+
   // Quick-filter buttons (preset, always in HTML)
   document.querySelectorAll(".quick-filter-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -160,6 +207,7 @@ $("searchForm").addEventListener("submit", async e => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         category, city, query, max,
+        source:    currentSource,
         no_site:   $("filterNoSite").checked,
         no_social: $("filterNoSocial").checked,
         no_phone:  $("filterNoPhone").checked,
@@ -351,9 +399,10 @@ function applyTableFilters() {
     if (ftrKw && !feats.includes(ftrKw)) return false;
     if (srvKw && !srvs.includes(srvKw))  return false;
 
-    // General search covers name/address/phone/category/services/features
+    // General search covers all text fields
     if (q) {
-      const hay = [c.name, c.address, c.phone, c.category, c.services, c.features]
+      const hay = [c.name, c.address, c.phone, c.category, c.services, c.features,
+                   c.hours, c.description, c.source_name]
         .join(" ").toLowerCase();
       if (!hay.includes(q)) return false;
     }
@@ -394,6 +443,42 @@ function renderTablePage() {
   $("tableCount").textContent =
     `${filteredRows.length} из ${allCompanies.length} компаний`;
 
+  const show2gis   = currentSource === "2gis" || currentSource === "both";
+  const showYandex = currentSource === "yandex" || currentSource === "both";
+  const showBoth   = currentSource === "both";
+  const mapTitle   = currentSource === "2gis" ? "2ГИС" : "Яндекс Карты";
+
+  // Sync table header
+  const thead = $("mainTable").querySelector("thead tr");
+  if (thead) {
+    thead.innerHTML = `
+      <th class="sortable" data-col="name">Название <span class="sort-arrow">↕</span></th>
+      <th>Телефон</th>
+      <th>Сайт</th>
+      <th>Соцсети</th>
+      <th class="sortable" data-col="rating">Рейтинг <span class="sort-arrow">↕</span></th>
+      <th class="sortable" data-col="reviews">Отзывы <span class="sort-arrow">↕</span></th>
+      <th>Адрес</th>
+      <th>Категория</th>
+      ${show2gis   ? '<th>Часы</th>' : ''}
+      ${showYandex ? `<th class="sortable" data-col="price_range">Цены <span class="sort-arrow">↕</span></th>` : ''}
+      <th>Услуги</th>
+      <th>Особенности</th>
+      ${showBoth   ? '<th>Источник</th>' : ''}
+      <th>Карты</th>`;
+    // Re-attach sort listeners
+    thead.querySelectorAll(".sortable").forEach(th => {
+      th.addEventListener("click", () => {
+        const col = th.dataset.col;
+        if (sortCol === col) sortDir *= -1;
+        else { sortCol = col; sortDir = -1; }
+        thead.querySelectorAll(".sort-arrow").forEach(a => a.textContent = "↕");
+        th.querySelector(".sort-arrow").textContent = sortDir > 0 ? "↑" : "↓";
+        applyTableFilters();
+      });
+    });
+  }
+
   tbody.innerHTML = slice.map((c, idx) => `
     <tr>
       <td class="td-name" title="${esc(c.name)}">${esc(trunc(c.name, 35))}</td>
@@ -406,11 +491,13 @@ function renderTablePage() {
       <td class="td-center">${c.reviews > 0 ? c.reviews : '<span class="td-muted">—</span>'}</td>
       <td class="td-addr" title="${esc(c.address)}">${esc(trunc(c.address, 35))}</td>
       <td class="td-muted">${esc(trunc(c.category, 20))}</td>
-      <td class="td-price">${c.price_range ? esc(c.price_range) : '<span class="td-muted">—</span>'}</td>
+      ${show2gis   ? `<td class="td-hours">${c.hours ? esc(trunc(c.hours, 30)) : '<span class="td-muted">—</span>'}</td>` : ''}
+      ${showYandex ? `<td class="td-price">${c.price_range ? esc(c.price_range) : '<span class="td-muted">—</span>'}</td>` : ''}
       <td>${renderTags(c.services, "srv")}</td>
       <td>${renderTags(c.features, "ftr")}</td>
+      ${showBoth   ? `<td><span class="source-badge source-badge--${c.source_name === '2ГИС' ? 'tg' : 'ya'}">${esc(c.source_name || '')}</span></td>` : ''}
       <td class="td-actions">
-        ${c.map_url ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps" title="Яндекс Карты">🗺</a>` : ""}
+        ${c.map_url ? `<a href="${esc(c.map_url)}" target="_blank" rel="noopener" class="link-maps" title="${mapTitle}">🗺</a>` : ""}
         <button class="btn-collect" data-idx="${start + idx}"
                 title="Выгрузить отзывы, фото, акции → ZIP + промт для Claude">📦</button>
       </td>
@@ -516,17 +603,7 @@ function renderPagination() {
   });
 }
 
-// Column sort
-$("mainTable").addEventListener("click", e => {
-  const th = e.target.closest(".sortable");
-  if (!th) return;
-  const col = th.dataset.col;
-  if (sortCol === col) sortDir *= -1;
-  else { sortCol = col; sortDir = -1; }
-  document.querySelectorAll(".sort-arrow").forEach(a => a.textContent = "↕");
-  th.querySelector(".sort-arrow").textContent = sortDir > 0 ? "↑" : "↓";
-  applyTableFilters();
-});
+// Column sort — delegated to thead rows rebuilt in renderTablePage
 
 // Table filter inputs
 ["tableSearch", "filterHasSite", "filterHasSocial",

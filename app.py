@@ -1,4 +1,4 @@
-"""Flask web interface — Yandex Maps Parser"""
+"""Flask web interface — Yandex Maps + 2GIS Parser"""
 from __future__ import annotations
 
 import json
@@ -8,6 +8,7 @@ import queue
 import re
 import threading
 import uuid
+from collections import OrderedDict
 from datetime import date, datetime
 from pathlib import Path
 
@@ -18,17 +19,74 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.cell_range import MultiCellRange
 from openpyxl.worksheet.datavalidation import DataValidation
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+# ── Yandex parser ─────────────────────────────────────────────────────────
 from yandex_parser import (
-    ALL_FIELD_DEFS, DEFAULT_FIELDS,
-    apply_filters, collect, export_excel,
-    _build_columns,
+    ALL_FIELD_DEFS as YP_FIELD_DEFS,
+    DEFAULT_FIELDS as YP_DEFAULT_FIELDS,
+    collect as yp_collect,
+    _build_columns as yp_build_columns,
 )
-from org_collector import collect_org_zip
+from org_collector import collect_org_zip as yandex_org_zip
+
+# ── 2GIS parser (optional) ────────────────────────────────────────────────
+try:
+    from twogis_parser import (
+        ALL_FIELD_DEFS as TG_FIELD_DEFS,
+        DEFAULT_FIELDS as TG_DEFAULT_FIELDS,
+        collect as tg_collect,
+        _build_columns as tg_build_columns,
+    )
+    from twogis_org_collector import collect_org_zip as twogis_org_zip
+    HAS_2GIS = True
+except ImportError:
+    HAS_2GIS = False
+    TG_FIELD_DEFS = {}
+    TG_DEFAULT_FIELDS = []
+    tg_collect = None
+    tg_build_columns = None
+    twogis_org_zip = None
+
+# ── Combined field defs (both sources) ───────────────────────────────────
+COMBINED_FIELD_DEFS: OrderedDict = OrderedDict([
+    ("name",        ("Название",           30)),
+    ("source_name", ("Источник",           10)),
+    ("phone",       ("Телефон",            22)),
+    ("site",        ("Сайт",              28)),
+    ("social",      ("Соцсети",           30)),
+    ("address",     ("Адрес",             40)),
+    ("lat",         ("Широта",            14)),
+    ("lon",         ("Долгота",           14)),
+    ("category",    ("Категория",         25)),
+    ("rating",      ("Рейтинг",           10)),
+    ("reviews",     ("Кол-во отзывов",    16)),
+    ("hours",       ("Часы работы",       30)),
+    ("description", ("Описание",          45)),
+    ("services",    ("Услуги / Товары",   50)),
+    ("features",    ("Особенности",       45)),
+    ("price_range", ("Цены",              20)),
+    ("has_site",    ("Есть сайт",         12)),
+    ("map_url",     ("Ссылка на карты",   36)),
+])
+
+def combined_build_columns(keys: list[str]) -> list[tuple]:
+    return [(k, COMBINED_FIELD_DEFS[k][0], COMBINED_FIELD_DEFS[k][1])
+            for k in keys if k in COMBINED_FIELD_DEFS]
+
+# Backward-compat aliases used by existing code
+ALL_FIELD_DEFS = YP_FIELD_DEFS
+DEFAULT_FIELDS  = YP_DEFAULT_FIELDS
+_build_columns  = yp_build_columns
 
 app = Flask(__name__)
 DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "downloads"))
 DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-HISTORY_FILE  = Path(os.environ.get("DOWNLOADS_DIR", "downloads")) / "history.json"
+HISTORY_FILE  = DOWNLOADS_DIR / "history.json"
 
 JOBS: dict[str, dict] = {}
 log = logging.getLogger(__name__)
@@ -52,15 +110,18 @@ def _save_history(entries: list):
         log.warning("Could not save history: %s", exc)
 
 # ---------------------------------------------------------------------------
-# Excel writer (saves to explicit path, same logic as yandex_parser)
+# Excel writer
 # ---------------------------------------------------------------------------
 HEADER_FILL = PatternFill("solid", fgColor="D9EAD3")
 HEADER_FONT = Font(bold=True)
 
 
 def _export_to_path(companies: list, filepath: Path,
-                    selected_fields: list[str] | None = None):
-    cols = _build_columns(selected_fields or DEFAULT_FIELDS)
+                    selected_fields: list[str] | None = None,
+                    build_cols_fn=None):
+    if build_cols_fn is None:
+        build_cols_fn = yp_build_columns
+    cols = build_cols_fn(selected_fields or YP_DEFAULT_FIELDS)
 
     def _write_sheet(ws, rows):
         for ci, (_, header, _) in enumerate(cols, 1):
@@ -105,45 +166,104 @@ def _export_to_path(companies: list, filepath: Path,
     wb.save(filepath)
 
 # ---------------------------------------------------------------------------
-# Background job
+# Background search job
 # ---------------------------------------------------------------------------
 def _run_job(job_id: str, query: str, max_companies: int,
-             filters: dict, selected_fields: list[str]):
+             filters: dict, selected_fields: list[str], source: str = "yandex"):
     job = JOBS[job_id]
     q: queue.Queue = job["queue"]
 
     def emit(event: str, **data):
         q.put({"event": event, "data": data})
 
-    try:
-        emit("start", message=f"Начинаем сбор: «{query}»")
-
-        # Build filter function so collect() can keep searching until
-        # enough companies PASS the filter, not just stop at N total.
+    def make_filter():
         no_site   = filters.get("no_site",   False)
         no_social = filters.get("no_social", False)
         no_phone  = filters.get("no_phone",  False)
-        active_filters = [no_site, no_social, no_phone]
-
-        if any(active_filters):
-            def filter_fn(c):
+        if any([no_site, no_social, no_phone]):
+            def fn(c):
                 if no_site   and c.get("has_site") != "Нет": return False
                 if no_social and c.get("social")   != "—":   return False
                 if no_phone  and c.get("phone")    != "—":   return False
                 return True
-        else:
-            filter_fn = None
+            return fn
+        return None
 
-        companies = collect(query, max_companies, emit=emit,
-                            filter_fn=filter_fn)
+    try:
+        filter_fn = make_filter()
+
+        if source == "2gis":
+            if not HAS_2GIS:
+                emit("error", message="Модуль 2ГИС не установлен")
+                job["status"] = "error"
+                return
+            emit("start", message=f"[2ГИС] Начинаем сбор: «{query}»")
+            companies = tg_collect(query, max_companies, emit=emit, filter_fn=filter_fn)
+            for c in companies:
+                c["source_name"] = "2ГИС"
+            build_cols_fn   = tg_build_columns
+            filename_prefix = "2gis"
+
+        elif source == "both":
+            if not HAS_2GIS:
+                emit("start", message=f"[Яндекс] 2ГИС недоступен — собираем только Яндекс")
+                companies = yp_collect(query, max_companies, emit=emit, filter_fn=filter_fn)
+                for c in companies:
+                    c["source_name"] = "Яндекс"
+                build_cols_fn   = yp_build_columns
+                filename_prefix = "yandex_maps"
+            else:
+                half = max(max_companies // 2, 1)
+                rest = max_companies - half
+
+                def yandex_emit(event, **data):
+                    if "message" in data:
+                        data["message"] = f"[Яндекс] {data['message']}"
+                    q.put({"event": event, "data": data})
+
+                def twogis_emit(event, **data):
+                    if "message" in data:
+                        data["message"] = f"[2ГИС] {data['message']}"
+                    q.put({"event": event, "data": data})
+
+                yandex_emit("start", message=f"Начинаем сбор: «{query}»")
+                ycos = yp_collect(query, half, emit=yandex_emit, filter_fn=filter_fn)
+                for c in ycos:
+                    c["source_name"] = "Яндекс"
+
+                twogis_emit("start", message=f"Начинаем сбор: «{query}»")
+                tcos = tg_collect(query, rest, emit=twogis_emit, filter_fn=filter_fn)
+                for c in tcos:
+                    c["source_name"] = "2ГИС"
+
+                seen = set()
+                companies = []
+                for c in ycos + tcos:
+                    key = (c.get("name","").lower()[:40], c.get("address","").lower()[:25])
+                    if key not in seen:
+                        seen.add(key)
+                        companies.append(c)
+
+                build_cols_fn   = combined_build_columns
+                filename_prefix = "combined"
+
+        else:  # yandex (default)
+            emit("start", message=f"[Яндекс] Начинаем сбор: «{query}»")
+            companies = yp_collect(query, max_companies, emit=emit, filter_fn=filter_fn)
+            for c in companies:
+                c["source_name"] = "Яндекс"
+            build_cols_fn   = yp_build_columns
+            filename_prefix = "yandex_maps"
 
         if not companies:
-            # Nothing at all — might be API issue or super-strict filter
-            filter_tips = []
-            if no_site:   filter_tips.append("«без сайта»")
-            if no_social: filter_tips.append("«без соцсетей»")
-            if no_phone:  filter_tips.append("«без телефона»")
-
+            no_site   = filters.get("no_site",   False)
+            no_social = filters.get("no_social", False)
+            no_phone  = filters.get("no_phone",  False)
+            filter_tips = (
+                (["«без сайта»"]   if no_site   else []) +
+                (["«без соцсетей»"] if no_social else []) +
+                (["«без телефона»"] if no_phone  else [])
+            )
             if filter_tips:
                 msg = (f"По запросу «{query}» не найдено компаний "
                        f"с фильтром {', '.join(filter_tips)}. "
@@ -154,59 +274,59 @@ def _run_job(job_id: str, query: str, max_companies: int,
             job["status"] = "error"
             return
 
-        # Soft warning when fewer results than requested
         warning = ""
-        if len(companies) < max_companies and any(active_filters):
-            filter_names = []
-            if no_site:   filter_names.append("без сайта")
-            if no_social: filter_names.append("без соцсетей")
-            if no_phone:  filter_names.append("без телефона")
+        if len(companies) < max_companies and filter_fn is not None:
+            no_site   = filters.get("no_site",   False)
+            no_social = filters.get("no_social", False)
+            no_phone  = filters.get("no_phone",  False)
+            filter_names = (
+                (["без сайта"]    if no_site   else []) +
+                (["без соцсетей"] if no_social else []) +
+                (["без телефона"] if no_phone  else [])
+            )
             warning = (f"Найдено {len(companies)} из {max_companies} "
                        f"(фильтр «{', '.join(filter_names)}» ограничил результаты)")
-            emit("progress", found=len(companies), total=max_companies,
-                 message=f"⚠ {warning}")
 
-        filtered = companies   # already filtered by collect()
-
-        emit("progress", found=len(filtered), total=max_companies,
+        emit("progress", found=len(companies), total=max_companies,
              message="Формируем Excel-файл…")
 
         safe     = re.sub(r"[^\w\-а-яА-Я]", "_", query)[:40]
-        filename = f"yandex_maps_{safe}_{date.today()}.xlsx"
+        filename = f"{filename_prefix}_{safe}_{date.today()}.xlsx"
         filepath = DOWNLOADS_DIR / filename
-        _export_to_path(filtered, filepath, selected_fields)
+        _export_to_path(companies, filepath, selected_fields, build_cols_fn)
 
-        total      = len(filtered)
-        with_site  = sum(1 for c in filtered if c["has_site"] == "Да")
-        with_phone = sum(1 for c in filtered if c["phone"]    != "—")
-        with_social= sum(1 for c in filtered if c["social"]   != "—")
-        ratings    = [c["rating"] for c in filtered
-                      if isinstance(c["rating"], float)]
+        total      = len(companies)
+        with_site  = sum(1 for c in companies if c.get("has_site") == "Да")
+        with_phone = sum(1 for c in companies if c.get("phone")    != "—")
+        with_social= sum(1 for c in companies if c.get("social")   != "—")
+        ratings    = [c["rating"] for c in companies if isinstance(c.get("rating"), float)]
         avg        = round(sum(ratings) / len(ratings), 1) if ratings else 0.0
 
         job["status"]    = "done"
         job["filename"]  = filename
-        job["companies"] = filtered   # stored for /api/results/<id>
+        job["companies"] = companies
+        job["source"]    = source
 
-        # Save to history
         hist  = _load_history()
         entry = {
-            "id":       job_id,
-            "query":    query,
-            "date":     date.today().isoformat(),
-            "time":     datetime.now().strftime("%H:%M"),
-            "total":    total,
-            "with_site":with_site,
-            "filename": filename,
-            "filters":  filters,
+            "id":        job_id,
+            "query":     query,
+            "date":      date.today().isoformat(),
+            "time":      datetime.now().strftime("%H:%M"),
+            "total":     total,
+            "with_site": with_site,
+            "filename":  filename,
+            "filters":   filters,
+            "source":    source,
         }
         hist.insert(0, entry)
-        _save_history(hist[:50])   # keep last 50
+        _save_history(hist[:50])
 
         emit("done",
              filename=filename,
              total=total,
              warning=warning,
+             source=source,
              with_site=with_site,
              without_site=total - with_site,
              with_phone=with_phone,
@@ -215,19 +335,22 @@ def _run_job(job_id: str, query: str, max_companies: int,
              pct_site=round(with_site  / total * 100) if total else 0,
              pct_phone=round(with_phone / total * 100) if total else 0,
              preview=[{
-                 "name":     c["name"],
-                 "phone":    c["phone"],
-                 "address":  c["address"],
-                 "site":     c["site"],
-                 "social":   c["social"],
-                 "rating":   c["rating"],
-                 "reviews":  c["reviews"],
-                 "has_site": c["has_site"],
-                 "map_url":  c.get("map_url", ""),
+                 "name":        c.get("name",        ""),
+                 "phone":       c.get("phone",       "—"),
+                 "address":     c.get("address",     ""),
+                 "site":        c.get("site",        "—"),
+                 "social":      c.get("social",      "—"),
+                 "rating":      c.get("rating",      "—"),
+                 "reviews":     c.get("reviews",     0),
+                 "has_site":    c.get("has_site",    "Нет"),
+                 "map_url":     c.get("map_url",     ""),
                  "services":    c.get("services",    ""),
                  "features":    c.get("features",    ""),
                  "price_range": c.get("price_range", ""),
-             } for c in filtered[:8]])
+                 "hours":       c.get("hours",       ""),
+                 "description": c.get("description", ""),
+                 "source_name": c.get("source_name", ""),
+             } for c in companies[:8]])
 
     except Exception as exc:
         log.exception("Job %s crashed", job_id)
@@ -242,15 +365,17 @@ def _run_job(job_id: str, query: str, max_companies: int,
 @app.get("/")
 def index():
     return render_template("index.html",
-                           field_defs=ALL_FIELD_DEFS,
-                           default_fields=DEFAULT_FIELDS)
+                           field_defs=YP_FIELD_DEFS,
+                           tg_field_defs=TG_FIELD_DEFS,
+                           combined_field_defs=COMBINED_FIELD_DEFS,
+                           default_fields=YP_DEFAULT_FIELDS,
+                           has_2gis=HAS_2GIS)
 
 
 @app.post("/api/start")
 def api_start():
     body = request.get_json(force=True)
 
-    # Build query from category + city OR raw query
     category = (body.get("category") or "").strip()
     city     = (body.get("city")     or "").strip()
     raw      = (body.get("query")    or "").strip()
@@ -272,16 +397,28 @@ def api_start():
     except (TypeError, ValueError):
         max_n = 50
 
+    source = (body.get("source") or "yandex").strip()
+    if source not in ("yandex", "2gis", "both"):
+        source = "yandex"
+
     filters = {
         "no_site":   bool(body.get("no_site")),
         "no_social": bool(body.get("no_social")),
         "no_phone":  bool(body.get("no_phone")),
     }
 
-    # Validate selected fields
-    all_keys = list(ALL_FIELD_DEFS.keys())
-    sel = body.get("fields") or DEFAULT_FIELDS
-    selected_fields = [f for f in sel if f in all_keys]
+    if source == "2gis":
+        valid_keys = list(TG_FIELD_DEFS.keys())
+        default    = TG_DEFAULT_FIELDS
+    elif source == "both":
+        valid_keys = list(COMBINED_FIELD_DEFS.keys())
+        default    = list(COMBINED_FIELD_DEFS.keys())
+    else:
+        valid_keys = list(YP_FIELD_DEFS.keys())
+        default    = YP_DEFAULT_FIELDS
+
+    sel = body.get("fields") or default
+    selected_fields = [f for f in sel if f in valid_keys]
     if "name" not in selected_fields:
         selected_fields.insert(0, "name")
 
@@ -293,10 +430,10 @@ def api_start():
     }
     threading.Thread(
         target=_run_job,
-        args=(job_id, query, max_n, filters, selected_fields),
+        args=(job_id, query, max_n, filters, selected_fields, source),
         daemon=True,
     ).start()
-    return jsonify(job_id=job_id, query=query)
+    return jsonify(job_id=job_id, query=query, source=source)
 
 
 @app.get("/api/stream/<job_id>")
@@ -361,27 +498,27 @@ def _run_org_job(job_id: str, company: dict):
     try:
         emit("start", message=f"Сбор данных: «{company.get('name', '')}»")
 
-        zip_filename = collect_org_zip(
-            company=company,
-            out_dir=DOWNLOADS_DIR,
-            emit=emit,
-        )
+        src = company.get("source_name", "Яндекс")
+        if src == "2ГИС" and HAS_2GIS and twogis_org_zip is not None:
+            zip_filename = twogis_org_zip(
+                company=company, out_dir=DOWNLOADS_DIR, emit=emit)
+        else:
+            zip_filename = yandex_org_zip(
+                company=company, out_dir=DOWNLOADS_DIR, emit=emit)
 
         job["status"]   = "done"
         job["filename"] = zip_filename
 
-        # Count items inside the ZIP
         reviews_count = photos_count = 0
         try:
-            import zipfile as _zf, json as _json
+            import zipfile as _zf
             with _zf.ZipFile(DOWNLOADS_DIR / zip_filename) as zf:
                 if "reviews.json" in zf.namelist():
-                    reviews_count = len(_json.loads(zf.read("reviews.json")))
+                    reviews_count = len(json.loads(zf.read("reviews.json")))
                 photos_count = sum(1 for n in zf.namelist() if n.startswith("photos/"))
         except Exception:
             pass
 
-        # History entry
         hist  = _load_history()
         entry = {
             "id":            job_id,
@@ -435,4 +572,5 @@ def api_start_org():
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
     app.run(debug=True, threaded=True, port=5000)
