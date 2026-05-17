@@ -192,10 +192,12 @@ def _parse_schedule(schedule: dict) -> str:
             d_to   = _DAY_MAP.get(days_range.get("to",   ""), "")
             wh = item.get("working_hours") or []
             h_str = f"{wh[0]['from']}–{wh[0]['to']}" if wh else ""
+            if not h_str:
+                continue  # closed or no hours — skip
             if d_from and d_to and d_from != d_to:
-                parts.append(f"{d_from}-{d_to} {h_str}".strip())
+                parts.append(f"{d_from}-{d_to} {h_str}")
             elif d_from:
-                parts.append(f"{d_from} {h_str}".strip())
+                parts.append(f"{d_from} {h_str}")
         return ", ".join(parts)
 
     # Format 2: {"Mon": {"working_hours": [...]}, "Tue": {...}, ...}
@@ -228,6 +230,13 @@ def _extract_attribute_features(attr_groups: list) -> str:
 # ---------------------------------------------------------------------------
 # Search API
 # ---------------------------------------------------------------------------
+class _ApiError(Exception):
+    """Raised when the API returns an unrecoverable error (e.g. 401, 403)."""
+    def __init__(self, status_code: int, msg: str):
+        super().__init__(msg)
+        self.status_code = status_code
+
+
 def _search_page(query: str, page: int) -> list[dict]:
     params = {
         "q":         query,
@@ -240,8 +249,16 @@ def _search_page(query: str, page: int) -> list[dict]:
     }
     try:
         resp = SESSION.get(_SEARCH_API, params=params, timeout=15)
+        if resp.status_code in (401, 403):
+            raise _ApiError(
+                resp.status_code,
+                f"2ГИС API вернул {resp.status_code}. "
+                f"Проверьте API-ключ (TWOGIS_API_KEY) или зарегистрируйтесь на dev.2gis.ru"
+            )
         resp.raise_for_status()
         return resp.json().get("result", {}).get("items", [])
+    except _ApiError:
+        raise
     except Exception as exc:
         log.warning("2GIS search page=%d: %s", page, exc)
         return []
@@ -321,7 +338,8 @@ def _enrich_byid(company: dict) -> dict:
     }
     try:
         resp = SESSION.get(_BYID_API, params=params, timeout=15)
-        resp.raise_for_status()
+        if resp.status_code not in (401, 403):
+            resp.raise_for_status()
         items = resp.json().get("result", {}).get("items", [])
         if not items:
             return company
@@ -343,11 +361,11 @@ def _enrich_byid(company: dict) -> dict:
         company["features"] = _extract_attribute_features(
             detail.get("attribute_groups") or [])
 
-    if not company.get("services"):
-        rubric_list = detail.get("rubric_list") or []
-        if rubric_list:
-            company["services"] = ", ".join(
-                r.get("name", "") for r in rubric_list if r.get("name"))
+    # Always prefer byid rubric_list (more detailed than search rubrics)
+    rubric_list = detail.get("rubric_list") or []
+    if rubric_list:
+        company["services"] = ", ".join(
+            r.get("name", "") for r in rubric_list if r.get("name"))
 
     return company
 
@@ -380,7 +398,11 @@ def collect(query: str, max_companies: int = 100,
               message=f"Загружаем страницу {page}…"
                       + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
 
-        items = _search_page(query, page)
+        try:
+            items = _search_page(query, page)
+        except _ApiError as exc:
+            _emit("error", message=str(exc))
+            return []
         if not items:
             streak += 1
             if streak >= 3:
