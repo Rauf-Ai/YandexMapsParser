@@ -1,0 +1,422 @@
+"""Flask web interface — 2GIS Parser"""
+from __future__ import annotations
+
+import json
+import logging
+import os
+import queue
+import re
+import threading
+import uuid
+from datetime import date, datetime
+from pathlib import Path
+
+from flask import Flask, Response, jsonify, render_template, request, send_file
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.cell_range import MultiCellRange
+from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl import Workbook
+from openpyxl.styles import Alignment
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+from twogis_parser import (
+    ALL_FIELD_DEFS, DEFAULT_FIELDS,
+    apply_filters, collect,
+    _build_columns,
+)
+from org_collector import collect_org_zip
+
+app = Flask(__name__)
+DOWNLOADS_DIR = Path(os.environ.get("DOWNLOADS_DIR", "downloads"))
+DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+HISTORY_FILE  = DOWNLOADS_DIR / "history.json"
+
+JOBS: dict[str, dict] = {}
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# History helpers
+# ---------------------------------------------------------------------------
+def _load_history() -> list:
+    if HISTORY_FILE.exists():
+        try:
+            return json.loads(HISTORY_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+def _save_history(entries: list):
+    try:
+        HISTORY_FILE.write_text(
+            json.dumps(entries, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log.warning("Could not save history: %s", exc)
+
+# ---------------------------------------------------------------------------
+# Excel writer
+# ---------------------------------------------------------------------------
+HEADER_FILL = PatternFill("solid", fgColor="D9EAD3")
+HEADER_FONT = Font(bold=True)
+
+
+def _export_to_path(companies: list, filepath: Path,
+                    selected_fields: list[str] | None = None):
+    cols = _build_columns(selected_fields or DEFAULT_FIELDS)
+
+    def _write_sheet(ws, rows):
+        for ci, (_, header, _) in enumerate(cols, 1):
+            cell = ws.cell(1, ci, header)
+            cell.fill = HEADER_FILL
+            cell.font = HEADER_FONT
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+        for ri, c in enumerate(rows, 2):
+            for ci, (key, _, _) in enumerate(cols, 1):
+                val = c.get(key)
+                if key in ("lat", "lon") and not isinstance(val, float): val = None
+                if key == "rating"       and not isinstance(val, float): val = None
+                cell = ws.cell(ri, ci, val)
+                if key in ("lat", "lon") and val is not None: cell.number_format = "0.000000"
+                elif key == "rating"     and val is not None: cell.number_format = "0.0"
+                elif key == "reviews":                        cell.number_format = "0"
+        for ci, (_, _, width) in enumerate(cols, 1):
+            ws.column_dimensions[get_column_letter(ci)].width = width
+        n = len(rows)
+        ws.auto_filter.ref = f"A1:{get_column_letter(len(cols))}{n + 1}"
+        if n > 0:
+            for ci, (key, _, _) in enumerate(cols, 1):
+                if key == "has_site":
+                    dv = DataValidation(type="list", formula1='"Да,Нет"', allow_blank=False)
+                    dv.sqref = MultiCellRange(
+                        f"{get_column_letter(ci)}2:{get_column_letter(ci)}{n + 1}")
+                    ws.add_data_validation(dv)
+                    break
+
+    wb = Workbook()
+    ws1 = wb.active
+    ws1.title = "Компании"
+    _write_sheet(ws1, companies)
+    ws2 = wb.create_sheet("Без сайта")
+    _write_sheet(ws2, [c for c in companies if c.get("has_site") == "Нет"])
+    wb.save(filepath)
+
+# ---------------------------------------------------------------------------
+# Background search job
+# ---------------------------------------------------------------------------
+def _run_job(job_id: str, query: str, max_companies: int,
+             filters: dict, selected_fields: list[str]):
+    job = JOBS[job_id]
+    q: queue.Queue = job["queue"]
+
+    def emit(event: str, **data):
+        q.put({"event": event, "data": data})
+
+    try:
+        emit("start", message=f"Начинаем сбор: «{query}»")
+
+        no_site   = filters.get("no_site",   False)
+        no_social = filters.get("no_social", False)
+        no_phone  = filters.get("no_phone",  False)
+
+        if any([no_site, no_social, no_phone]):
+            def filter_fn(c):
+                if no_site   and c.get("has_site") != "Нет": return False
+                if no_social and c.get("social")   != "—":   return False
+                if no_phone  and c.get("phone")    != "—":   return False
+                return True
+        else:
+            filter_fn = None
+
+        companies = collect(query, max_companies, emit=emit, filter_fn=filter_fn)
+
+        if not companies:
+            filter_tips = []
+            if no_site:   filter_tips.append("«без сайта»")
+            if no_social: filter_tips.append("«без соцсетей»")
+            if no_phone:  filter_tips.append("«без телефона»")
+            if filter_tips:
+                msg = (f"По запросу «{query}» не найдено компаний "
+                       f"с фильтром {', '.join(filter_tips)}. "
+                       f"Попробуйте снять фильтр или изменить запрос.")
+            else:
+                msg = f"По запросу «{query}» ничего не найдено. Проверьте запрос."
+            emit("error", message=msg)
+            job["status"] = "error"
+            return
+
+        warning = ""
+        if len(companies) < max_companies and any([no_site, no_social, no_phone]):
+            filter_names = []
+            if no_site:   filter_names.append("без сайта")
+            if no_social: filter_names.append("без соцсетей")
+            if no_phone:  filter_names.append("без телефона")
+            warning = (f"Найдено {len(companies)} из {max_companies} "
+                       f"(фильтр «{', '.join(filter_names)}» ограничил результаты)")
+
+        emit("progress", found=len(companies), total=max_companies,
+             message="Формируем Excel-файл…")
+
+        safe     = re.sub(r"[^\w\-а-яА-Я]", "_", query)[:40]
+        filename = f"2gis_{safe}_{date.today()}.xlsx"
+        filepath = DOWNLOADS_DIR / filename
+        _export_to_path(companies, filepath, selected_fields)
+
+        total      = len(companies)
+        with_site  = sum(1 for c in companies if c["has_site"] == "Да")
+        with_phone = sum(1 for c in companies if c["phone"]    != "—")
+        with_social= sum(1 for c in companies if c["social"]   != "—")
+        ratings    = [c["rating"] for c in companies if isinstance(c["rating"], float)]
+        avg        = round(sum(ratings) / len(ratings), 1) if ratings else 0.0
+
+        job["status"]    = "done"
+        job["filename"]  = filename
+        job["companies"] = companies
+
+        hist  = _load_history()
+        entry = {
+            "id":        job_id,
+            "query":     query,
+            "date":      date.today().isoformat(),
+            "time":      datetime.now().strftime("%H:%M"),
+            "total":     total,
+            "with_site": with_site,
+            "filename":  filename,
+            "filters":   filters,
+        }
+        hist.insert(0, entry)
+        _save_history(hist[:50])
+
+        emit("done",
+             filename=filename,
+             total=total,
+             warning=warning,
+             with_site=with_site,
+             without_site=total - with_site,
+             with_phone=with_phone,
+             with_social=with_social,
+             avg_rating=avg,
+             pct_site=round(with_site  / total * 100) if total else 0,
+             pct_phone=round(with_phone / total * 100) if total else 0,
+             preview=[{
+                 "name":        c["name"],
+                 "phone":       c["phone"],
+                 "address":     c["address"],
+                 "site":        c["site"],
+                 "social":      c["social"],
+                 "rating":      c["rating"],
+                 "reviews":     c["reviews"],
+                 "has_site":    c["has_site"],
+                 "map_url":     c.get("map_url", ""),
+                 "services":    c.get("services",    ""),
+                 "features":    c.get("features",    ""),
+                 "hours":       c.get("hours",       ""),
+                 "description": c.get("description", ""),
+             } for c in companies[:8]])
+
+    except Exception as exc:
+        log.exception("Job %s crashed", job_id)
+        job["status"] = "error"
+        q.put({"event": "error", "data": {"message": str(exc)}})
+    finally:
+        q.put(None)
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+@app.get("/")
+def index():
+    return render_template("index.html",
+                           field_defs=ALL_FIELD_DEFS,
+                           default_fields=DEFAULT_FIELDS)
+
+
+@app.post("/api/start")
+def api_start():
+    body = request.get_json(force=True)
+
+    category = (body.get("category") or "").strip()
+    city     = (body.get("city")     or "").strip()
+    raw      = (body.get("query")    or "").strip()
+
+    if category and city:
+        query = f"{category} {city}"
+    elif category:
+        query = category
+    elif city and raw:
+        query = f"{raw} {city}"
+    else:
+        query = raw
+
+    if not query:
+        return jsonify(error="Введите поисковый запрос или выберите категорию"), 400
+
+    try:
+        max_n = max(1, min(int(body.get("max", 50)), 500))
+    except (TypeError, ValueError):
+        max_n = 50
+
+    filters = {
+        "no_site":   bool(body.get("no_site")),
+        "no_social": bool(body.get("no_social")),
+        "no_phone":  bool(body.get("no_phone")),
+    }
+
+    all_keys = list(ALL_FIELD_DEFS.keys())
+    sel = body.get("fields") or DEFAULT_FIELDS
+    selected_fields = [f for f in sel if f in all_keys]
+    if "name" not in selected_fields:
+        selected_fields.insert(0, "name")
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "running", "query": query,
+        "filename": None, "error": None,
+        "queue": queue.Queue(),
+    }
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, query, max_n, filters, selected_fields),
+        daemon=True,
+    ).start()
+    return jsonify(job_id=job_id, query=query)
+
+
+@app.get("/api/stream/<job_id>")
+def api_stream(job_id):
+    if job_id not in JOBS:
+        return jsonify(error="Not found"), 404
+
+    def generate():
+        q: queue.Queue = JOBS[job_id]["queue"]
+        while True:
+            msg = q.get()
+            if msg is None:
+                yield "event: close\ndata: {}\n\n"
+                break
+            data = json.dumps(msg["data"], ensure_ascii=False)
+            yield f"event: {msg['event']}\ndata: {data}\n\n"
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/download/<filename>")
+def api_download(filename):
+    safe = re.sub(r"[^\w\-а-яА-Я.]", "_", filename)
+    path = DOWNLOADS_DIR / safe
+    if not path.exists():
+        return jsonify(error="File not found"), 404
+    return send_file(path, as_attachment=True, download_name=safe)
+
+
+@app.get("/api/results/<job_id>")
+def api_results(job_id):
+    job = JOBS.get(job_id)
+    if not job or job.get("status") != "done":
+        return jsonify(error="Not found or not done"), 404
+    return jsonify(job.get("companies", []))
+
+
+@app.get("/api/history")
+def api_history():
+    return jsonify(_load_history())
+
+
+@app.delete("/api/history/<entry_id>")
+def api_history_delete(entry_id):
+    hist = [e for e in _load_history() if e.get("id") != entry_id]
+    _save_history(hist)
+    return jsonify(ok=True)
+
+# ---------------------------------------------------------------------------
+# Org-collect job
+# ---------------------------------------------------------------------------
+def _run_org_job(job_id: str, company: dict):
+    job = JOBS[job_id]
+    q: queue.Queue = job["queue"]
+
+    def emit(event: str, **data):
+        q.put({"event": event, "data": data})
+
+    try:
+        emit("start", message=f"Сбор данных: «{company.get('name', '')}»")
+
+        zip_filename = collect_org_zip(
+            company=company,
+            out_dir=DOWNLOADS_DIR,
+            emit=emit,
+        )
+
+        job["status"]   = "done"
+        job["filename"] = zip_filename
+
+        reviews_count = photos_count = 0
+        try:
+            import zipfile as _zf
+            with _zf.ZipFile(DOWNLOADS_DIR / zip_filename) as zf:
+                if "reviews.json" in zf.namelist():
+                    reviews_count = len(json.loads(zf.read("reviews.json")))
+                photos_count = sum(1 for n in zf.namelist() if n.startswith("photos/"))
+        except Exception:
+            pass
+
+        hist  = _load_history()
+        entry = {
+            "id":            job_id,
+            "query":         company.get("name", ""),
+            "date":          date.today().isoformat(),
+            "time":          datetime.now().strftime("%H:%M"),
+            "total":         0,
+            "with_site":     0,
+            "filename":      zip_filename,
+            "type":          "org_collect",
+            "company":       company.get("name", ""),
+            "reviews_count": reviews_count,
+            "photos_count":  photos_count,
+            "filters":       {},
+        }
+        hist.insert(0, entry)
+        _save_history(hist[:50])
+
+        emit("done",
+             zip_filename=zip_filename,
+             reviews_count=reviews_count,
+             photos_count=photos_count)
+
+    except Exception as exc:
+        log.exception("Org job %s crashed", job_id)
+        job["status"] = "error"
+        q.put({"event": "error", "data": {"message": str(exc)}})
+    finally:
+        q.put(None)
+
+
+@app.post("/api/start-org")
+def api_start_org():
+    body    = request.get_json(force=True)
+    company = body.get("company") or {}
+    if not company.get("name"):
+        return jsonify(error="Нет данных о компании"), 400
+
+    job_id = str(uuid.uuid4())
+    JOBS[job_id] = {
+        "status": "running", "query": company.get("name", ""),
+        "filename": None, "error": None,
+        "queue": queue.Queue(),
+    }
+    threading.Thread(
+        target=_run_org_job,
+        args=(job_id, company),
+        daemon=True,
+    ).start()
+    return jsonify(job_id=job_id, name=company.get("name", ""))
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    app.run(debug=True, threaded=True, port=5001)

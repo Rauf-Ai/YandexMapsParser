@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>2ГИС Парсер</title>
+  <link rel="stylesheet" href="/static/style.css"/>
+</head>
+<body>
+
+<!-- ── Header + Nav ──────────────────────────────────────────── -->
+<header class="header">
+  <div class="header-inner">
+    <a class="logo" href="#" id="logoLink">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none">
+        <circle cx="14" cy="14" r="14" fill="#1CAA53"/>
+        <text x="14" y="19" text-anchor="middle" font-family="Arial,sans-serif"
+              font-size="13" font-weight="900" fill="white">2ГИС</text>
+      </svg>
+      Парсер 2ГИС
+    </a>
+    <nav class="nav-tabs">
+      <a class="nav-tab active" data-section="search"  href="#">Поиск</a>
+      <a class="nav-tab"       data-section="results" href="#" id="navResults" style="display:none">Результаты</a>
+      <a class="nav-tab"       data-section="history" href="#" id="navHistory">История</a>
+    </nav>
+  </div>
+</header>
+
+<main class="main">
+
+  <!-- ══════════════ ПОИСК ══════════════ -->
+  <div id="page-search">
+    <section class="card" id="searchSection">
+      <h1 class="card-title">Сбор компаний из 2ГИС</h1>
+      <p class="card-sub">Выберите категорию и город или введите запрос вручную</p>
+
+      <form id="searchForm" autocomplete="off">
+        <div class="row-2">
+          <div class="field-group">
+            <label class="field-label" for="categoryInput">Категория бизнеса</label>
+            <select id="categoryInput" class="input select-input">
+              <option value="">— любая —</option>
+              <optgroup label="Еда и напитки">
+                <option>Рестораны</option><option>Кафе</option>
+                <option>Бары и пабы</option><option>Пиццерии</option>
+                <option>Суши и роллы</option><option>Фастфуд</option>
+                <option>Кофейни</option><option>Кондитерские</option>
+                <option>Доставка еды</option>
+              </optgroup>
+              <optgroup label="Красота и здоровье">
+                <option>Салоны красоты</option><option>Парикмахерские</option>
+                <option>Барбершопы</option><option>Ногтевые студии</option>
+                <option>Стоматологии</option><option>Медицинские центры</option>
+                <option>Аптеки</option><option>Фитнес-клубы</option>
+                <option>Массажные салоны</option><option>Ветклиники</option>
+                <option>Оптики</option>
+              </optgroup>
+              <optgroup label="Авто">
+                <option>Автосервисы</option><option>Шиномонтаж</option>
+                <option>Автомойки</option><option>Автосалоны</option>
+                <option>Автозапчасти</option>
+              </optgroup>
+              <optgroup label="Услуги">
+                <option>Юридические услуги</option><option>Бухгалтерские услуги</option>
+                <option>Строительство и ремонт</option><option>Клининг</option>
+                <option>Фотостудии</option><option>Детские центры</option>
+                <option>Языковые школы</option><option>Ломбарды</option>
+                <option>Нотариусы</option><option>Страховые</option>
+                <option>Квесты</option>
+              </optgroup>
+              <optgroup label="Торговля и гостиницы">
+                <option>Магазины одежды</option><option>Продуктовые магазины</option>
+                <option>Цветы</option><option>Гостиницы и отели</option>
+                <option>Банки</option><option>Торговые центры</option>
+                <option>Кинотеатры</option><option>Боулинг</option>
+              </optgroup>
+            </select>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="cityInput">Город</label>
+            <input id="cityInput" class="input" type="text"
+                   placeholder="Начните вводить…" list="citiesList" autocomplete="off"/>
+            <datalist id="citiesList">
+              <option>Москва</option><option>Санкт-Петербург</option>
+              <option>Новосибирск</option><option>Екатеринбург</option>
+              <option>Казань</option><option>Нижний Новгород</option>
+              <option>Челябинск</option><option>Самара</option>
+              <option>Омск</option><option>Ростов-на-Дону</option>
+              <option>Уфа</option><option>Красноярск</option>
+              <option>Пермь</option><option>Воронеж</option>
+              <option>Волгоград</option><option>Краснодар</option>
+              <option>Саратов</option><option>Тюмень</option>
+              <option>Тольятти</option><option>Ижевск</option>
+              <option>Барнаул</option><option>Ульяновск</option>
+              <option>Иркутск</option><option>Хабаровск</option>
+              <option>Ярославль</option><option>Владивосток</option>
+              <option>Томск</option><option>Оренбург</option>
+              <option>Кемерово</option><option>Рязань</option>
+              <option>Астрахань</option><option>Пенза</option>
+              <option>Тула</option><option>Киров</option>
+              <option>Чебоксары</option><option>Калининград</option>
+              <option>Ставрополь</option><option>Белгород</option>
+              <option>Сочи</option><option>Мурманск</option>
+              <option>Грозный</option><option>Махачкала</option>
+              <option>Сургут</option><option>Смоленск</option>
+              <option>Вологда</option><option>Якутск</option>
+              <option>Новокузнецк</option><option>Липецк</option>
+              <option>Брянск</option><option>Чита</option>
+            </datalist>
+          </div>
+        </div>
+
+        <div class="field-group">
+          <label class="field-label" for="queryInput">
+            Или произвольный запрос
+            <span class="hint-badge">необязательно</span>
+          </label>
+          <div class="input-wrap">
+            <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <input id="queryInput" class="input" type="text"
+                   placeholder="например: суши с доставкой Новосибирск"/>
+          </div>
+          <div class="examples">
+            <button type="button" class="chip" data-q="Стоматологии"  data-city="Казань">стоматология Казань</button>
+            <button type="button" class="chip" data-q="Рестораны"     data-city="Москва">рестораны Москва</button>
+            <button type="button" class="chip" data-q="Автосервисы"   data-city="Екатеринбург">автосервис Екб</button>
+            <button type="button" class="chip" data-q="Салоны красоты" data-city="Санкт-Петербург">красота СПб</button>
+          </div>
+        </div>
+
+        <div class="field-group" style="max-width:220px">
+          <label class="field-label" for="maxInput">Количество компаний</label>
+          <input id="maxInput" class="input" type="number" min="1" max="500" value="50"/>
+        </div>
+
+        <div class="section-heading">Фильтрация выгрузки</div>
+        <div class="check-grid">
+          <label class="check-item">
+            <input type="checkbox" id="filterNoSite"/>
+            <span class="check-box"></span>
+            <span>Только без сайта</span>
+          </label>
+          <label class="check-item">
+            <input type="checkbox" id="filterNoSocial"/>
+            <span class="check-box"></span>
+            <span>Только без соцсетей</span>
+          </label>
+          <label class="check-item">
+            <input type="checkbox" id="filterNoPhone"/>
+            <span class="check-box"></span>
+            <span>Только без телефона</span>
+          </label>
+        </div>
+
+        <div class="collapsible">
+          <button type="button" class="collapsible-btn" id="fieldsToggleBtn">
+            <svg id="fieldsArrow" width="14" height="14" viewBox="0 0 14 14" fill="none">
+              <path d="M3 5l4 4 4-4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Поля в Excel
+            <span class="collapsible-count" id="fieldsCount">все выбраны</span>
+          </button>
+          <div class="collapsible-body" id="fieldsBody">
+            <div class="fields-actions">
+              <button type="button" class="btn-link" id="selectAllFields">Выбрать все</button>
+              <button type="button" class="btn-link" id="selectNoneFields">Снять все</button>
+            </div>
+            <div class="check-grid check-grid--fields" id="fieldsGrid"></div>
+          </div>
+        </div>
+
+        <button class="btn-primary" type="submit" id="startBtn">
+          <svg width="17" height="17" viewBox="0 0 17 17" fill="none">
+            <path d="M4 8.5h9M9 4l4.5 4.5L9 13" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Начать сбор
+        </button>
+      </form>
+    </section>
+
+    <!-- Progress -->
+    <section class="card hidden" id="progressSection">
+      <div class="progress-header">
+        <div class="pulse-dot"></div>
+        <span class="progress-title" id="progressTitle">Идёт сбор…</span>
+        <button class="btn-ghost btn-sm" id="cancelBtn">✕ Отмена</button>
+      </div>
+      <div class="progress-track"><div class="progress-bar" id="progressBar"></div></div>
+      <div class="progress-meta">
+        <span id="progressFound">Найдено: 0</span>
+        <span id="progressPct">0%</span>
+      </div>
+      <div class="log-box" id="logBox"></div>
+    </section>
+
+    <!-- Error -->
+    <section class="card hidden" id="errorSection">
+      <div class="error-icon">!</div>
+      <h2 class="error-title">Ошибка</h2>
+      <p class="error-msg" id="errorMsg"></p>
+      <button class="btn-secondary" id="errorRetryBtn">Попробовать снова</button>
+    </section>
+  </div>
+
+  <!-- ══════════════ РЕЗУЛЬТАТЫ ══════════════ -->
+  <div id="page-results" style="display:none">
+    <section class="card result-summary" id="resultSection">
+      <div class="result-top">
+        <div class="result-icon">✓</div>
+        <div>
+          <h2 class="result-title">Готово!</h2>
+          <p class="result-sub" id="resultSub"></p>
+        </div>
+        <a class="btn-primary" id="downloadBtn" href="#" style="margin-left:auto">
+          <svg width="16" height="16" viewBox="0 0 17 17" fill="none">
+            <path d="M8.5 3v8M5 8l3.5 3.5L12 8" stroke="white" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3 13.5h11" stroke="white" stroke-width="1.8" stroke-linecap="round"/>
+          </svg>
+          Скачать Excel
+        </a>
+      </div>
+      <div class="result-warning hidden" id="resultWarning"></div>
+      <div class="stats-grid" id="statsGrid"></div>
+    </section>
+
+    <!-- Full table -->
+    <section class="card" id="tableSection">
+      <div class="table-controls">
+        <div class="input-wrap" style="flex:1;max-width:360px">
+          <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+            <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+            <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+          </svg>
+          <input id="tableSearch" class="input" type="text" placeholder="Поиск по таблице…"/>
+        </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Сайт:</label>
+          <select id="filterHasSite" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option><option value="Да">Есть</option><option value="Нет">Нет</option>
+          </select>
+        </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Соцсети:</label>
+          <select id="filterHasSocial" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option><option value="yes">Есть</option><option value="no">Нет</option>
+          </select>
+        </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Услуги:</label>
+          <select id="filterHasServices" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option><option value="yes">Указаны</option><option value="no">Не указаны</option>
+          </select>
+        </div>
+        <div class="table-filter-group">
+          <label class="table-filter-label">Особенности:</label>
+          <select id="filterHasFeatures" class="input select-input" style="width:auto;padding:8px 28px 8px 10px">
+            <option value="">Все</option><option value="yes">Указаны</option><option value="no">Не указаны</option>
+          </select>
+        </div>
+        <span class="table-count" id="tableCount"></span>
+      </div>
+
+      <!-- Tag filters -->
+      <div id="tagFiltersRow" style="display:none">
+        <div class="quick-filters-bar">
+          <span class="quick-filters-label">Особенности:</span>
+          <button class="quick-filter-btn" data-kws="парк,стоянка">🅿 Парковка</button>
+          <button class="quick-filter-btn" data-kws="wi-fi,wifi,вай-фай,вайфай">📶 Wi-Fi</button>
+          <button class="quick-filter-btn" data-kws="доставк">🚚 Доставка</button>
+          <button class="quick-filter-btn" data-kws="бесконтактн,терминал,картой">💳 Оплата картой</button>
+          <div class="cloud-divider"></div>
+          <div id="featureTags" class="tag-cloud"></div>
+          <div class="input-wrap kw-wrap">
+            <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <input id="filterFeatureKw" class="input" type="text" placeholder="Поиск в особенностях…"/>
+          </div>
+        </div>
+        <div class="quick-filters-bar" id="servicesBar">
+          <span class="quick-filters-label">Услуги:</span>
+          <div id="serviceTags" class="tag-cloud"></div>
+          <div class="input-wrap kw-wrap">
+            <svg class="input-icon" viewBox="0 0 20 20" fill="none">
+              <circle cx="8.5" cy="8.5" r="5.5" stroke="currentColor" stroke-width="1.6"/>
+              <path d="M13 13l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+            </svg>
+            <input id="filterServiceKw" class="input" type="text" placeholder="Поиск в услугах…"/>
+          </div>
+        </div>
+      </div>
+
+      <div class="table-scroll" id="mainTableScroll">
+        <table class="data-table" id="mainTable">
+          <thead>
+            <tr>
+              <th class="sortable" data-col="name">Название <span class="sort-arrow">↕</span></th>
+              <th>Телефон</th>
+              <th>Сайт</th>
+              <th>Соцсети</th>
+              <th class="sortable" data-col="rating">Рейтинг <span class="sort-arrow">↕</span></th>
+              <th class="sortable" data-col="reviews">Отзывы <span class="sort-arrow">↕</span></th>
+              <th>Адрес</th>
+              <th>Категория</th>
+              <th>Часы работы</th>
+              <th>Услуги</th>
+              <th>Особенности</th>
+              <th>2ГИС</th>
+            </tr>
+          </thead>
+          <tbody id="mainTableBody"></tbody>
+        </table>
+      </div>
+
+      <div class="pagination" id="pagination"></div>
+    </section>
+  </div>
+
+  <!-- ══════════════ ИСТОРИЯ ══════════════ -->
+  <div id="page-history" style="display:none">
+    <section class="card">
+      <div class="history-header">
+        <h2 class="history-title">История парсингов</h2>
+        <button class="btn-ghost btn-sm" id="clearHistoryBtn">Очистить всё</button>
+      </div>
+      <div id="historyList"></div>
+    </section>
+  </div>
+
+</main>
+
+<footer class="footer">2ГИС Парсер · Python + Flask + openpyxl · API 2GIS v3</footer>
+
+<!-- ── Collect overlay ────────────────────────────────────────── -->
+<div id="collectOverlay" class="collect-overlay hidden">
+  <div class="collect-header">
+    <span class="collect-icon">📦</span>
+    <div class="collect-title-wrap">
+      <div class="collect-label">Сбор данных компании</div>
+      <div class="collect-name" id="collectOrgName">…</div>
+    </div>
+    <button class="btn-ghost btn-sm" id="collectCancelBtn" title="Закрыть">✕</button>
+  </div>
+  <div class="progress-track" style="margin:8px 0 4px">
+    <div class="progress-bar" id="collectBar"></div>
+  </div>
+  <div class="log-box" id="collectLog" style="max-height:90px;font-size:.7rem"></div>
+  <div class="collect-footer">
+    <a id="collectDownloadBtn" class="btn-primary hidden"
+       style="padding:8px 16px;font-size:.82rem;width:100%;justify-content:center"
+       href="#">↓ Скачать ZIP-архив</a>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
