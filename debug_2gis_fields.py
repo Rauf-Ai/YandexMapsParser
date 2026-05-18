@@ -24,63 +24,47 @@ session.headers.update({
     "Referer": "https://2gis.ru/",
 })
 
-ORG_ID = "1267165676908780"   # Bukowski grill
+BRANCH_ID = "1267165676908780"   # Bukowski grill — ID филиала
 
+# ── Шаг 1: получить org.id из byid ──────────────────────────────────────────
 print("=" * 60)
-print("ТЕСТ: byid с разными наборами полей")
-print("=" * 60)
-
-field_variants = [
-    "items.contact_groups",
-    "items.contacts",
-    "items.links",
-    "items.phone_number",
-    "items.org",
-    "items.contact_groups,items.links,items.org",
-    # Запросить ВСЁ
-    ("items.schedule,items.description_short,items.rubric_list,"
-     "items.attribute_groups,items.photos,items.contact_groups,"
-     "items.links,items.org,items.external_content,items.flags"),
-]
-
-for fields in field_variants:
-    params = {"id": ORG_ID, "fields": fields, "key": KEY, "locale": "ru_RU"}
-    r = session.get("https://catalog.api.2gis.com/3.0/items/byid",
-                    params=params, timeout=15)
-    items = r.json().get("result", {}).get("items", [])
-    detail = items[0] if items else {}
-    keys = sorted(detail.keys())
-    has_contact = any("contact" in k or "phone" in k or "link" in k for k in keys)
-    marker = "✅" if has_contact else "  "
-    print(f"{marker} fields={fields[:60]}")
-    print(f"     → ключи: {keys}")
-    if has_contact:
-        for k in keys:
-            if "contact" in k or "phone" in k or "link" in k:
-                print(f"     → {k}: {json.dumps(detail[k], ensure_ascii=False)[:300]}")
-    print()
-
-print("=" * 60)
-print("ТЕСТ: поиск через /3.0/items с расширенными полями")
+print("Шаг 1: получаем org.id для филиала")
 print("=" * 60)
 
-params = {
-    "q": "Bukowski grill Екатеринбург",
-    "page": 1,
-    "page_size": 3,
-    "fields": ("items.point,items.contact_groups,items.rubrics,items.reviews,"
-               "items.links,items.org,items.external_content"),
-    "key": KEY,
-    "locale": "ru_RU",
-}
-r = session.get("https://catalog.api.2gis.com/3.0/items", params=params, timeout=15)
+r = session.get("https://catalog.api.2gis.com/3.0/items/byid",
+                params={"id": BRANCH_ID, "fields": "items.org", "key": KEY, "locale": "ru_RU"},
+                timeout=15)
 items = r.json().get("result", {}).get("items", [])
-if items:
-    first = items[0]
-    print(f"Найдено: {first.get('name')}")
-    print(f"Все ключи: {sorted(first.keys())}")
-    for k in sorted(first.keys()):
-        if "contact" in k or "phone" in k or "link" in k or "org" in k:
-            print(f"  {k}: {json.dumps(first[k], ensure_ascii=False)[:200]}")
-else:
-    print("Ничего не найдено")
+detail = items[0] if items else {}
+org    = detail.get("org", {})
+ORG_ID = org.get("id", "")
+print(f"  branch_id : {BRANCH_ID}")
+print(f"  org.id    : {ORG_ID}")
+print(f"  org       : {json.dumps(org, ensure_ascii=False)}")
+
+if not ORG_ID:
+    print("\n❌ org.id не найден"); sys.exit(1)
+
+# ── Шаг 2: запросить contact_groups по org.id ────────────────────────────────
+print("\n" + "=" * 60)
+print(f"Шаг 2: byid с org.id={ORG_ID}")
+print("=" * 60)
+
+for fields in [
+    "items.contact_groups",
+    "items.contact_groups,items.links",
+    "items.contact_groups,items.description_short,items.rubric_list",
+]:
+    r2 = session.get("https://catalog.api.2gis.com/3.0/items/byid",
+                     params={"id": ORG_ID, "fields": fields, "key": KEY, "locale": "ru_RU"},
+                     timeout=15)
+    items2 = r2.json().get("result", {}).get("items", [])
+    det2   = items2[0] if items2 else {}
+    keys2  = sorted(det2.keys())
+    has_cg = "contact_groups" in keys2
+    marker = "✅" if has_cg else "  "
+    print(f"{marker} fields={fields[:70]}")
+    print(f"     ключи: {keys2}")
+    if has_cg:
+        print(f"     contact_groups: {json.dumps(det2['contact_groups'], ensure_ascii=False)[:500]}")
+    print()
