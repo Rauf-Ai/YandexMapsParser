@@ -575,6 +575,14 @@ def collect(query: str, max_companies: int = 100,
         if emit:
             emit(event, **kw)
 
+    # Browser session for contact enrichment (API free tier lacks contact_groups)
+    try:
+        from browser_fetch import BrowserSession
+        bs = BrowserSession()
+        bs.start()
+    except Exception:
+        bs = None
+
     hard_cap  = min(max_companies * 8, 1000) if filter_fn else max_companies
     all_seen:    set[tuple] = set()
     all_fetched: list[dict] = []
@@ -628,6 +636,27 @@ def collect(query: str, max_companies: int = 100,
                   message=f"Обогащаем: {c['name'][:40]}…")
 
             c = _enrich_byid(c)
+
+            # Browser-based contact extraction: API free tier omits contact_groups.
+            # Playwright loads the rendered 2gis.ru page and extracts tel:/links.
+            needs_contacts = (c.get("phone") == "—" or c.get("site") == "—"
+                              or c.get("social") == "—")
+            if needs_contacts and bs and bs.available:
+                map_url = c.get("map_url", "")
+                if map_url:
+                    page_html = bs.fetch(map_url, scroll_px=400,
+                                         wait_ms=3_000, timeout_ms=25_000)
+                    if page_html:
+                        ph, st, sc = _extract_contacts_html(page_html)
+                        if c.get("phone") == "—" and ph != "—":
+                            c["phone"] = ph
+                        if c.get("site") == "—" and st != "—":
+                            c["site"]     = st
+                            c["has_site"] = "Да"
+                        if c.get("social") == "—" and sc != "—":
+                            c["social"] = sc
+                        _enrich_from_jsonld(page_html, c)
+
             _sleep(0.4, 1.0)
             all_fetched.append(c)
 
@@ -638,6 +667,9 @@ def collect(query: str, max_companies: int = 100,
                 break
 
         _sleep(0.6, 1.5)
+
+    if bs:
+        bs.stop()
 
     return passed if filter_fn else all_fetched
 

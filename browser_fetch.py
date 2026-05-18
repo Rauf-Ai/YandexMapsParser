@@ -182,16 +182,32 @@ class BrowserSession:
             from playwright.sync_api import TimeoutError as PWTimeout
             ctx = self._browser.new_context(**_CONTEXT_OPTS)
             page = ctx.new_page()
+            loaded = False
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_ms)
+                loaded = True
             except PWTimeout:
+                # Page may be partially loaded — try to get content anyway
+                try:
+                    _ = page.url  # check page is still alive
+                    loaded = page.url not in ("", "about:blank")
+                except Exception:
+                    pass
+            if not loaded:
                 ctx.close()
                 return ""
             if scroll_px:
-                page.evaluate(f"window.scrollBy(0, {scroll_px})")
+                try:
+                    page.evaluate(f"window.scrollBy(0, {scroll_px})")
+                except Exception:
+                    pass
             if wait_ms:
                 page.wait_for_timeout(wait_ms)
-            html = page.content()
+            try:
+                html = page.content()
+            except Exception:
+                ctx.close()
+                return ""
             ctx.close()
             if not _is_real_page(html):
                 return ""
