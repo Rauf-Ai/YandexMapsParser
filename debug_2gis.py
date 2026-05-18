@@ -94,7 +94,8 @@ print("=" * 60)
 org_id = str(first.get("id", ""))
 p2 = {
     "id":     org_id,
-    "fields": "items.schedule,items.description_short,items.rubric_list,items.attribute_groups",
+    "fields": ("items.schedule,items.description_short,items.rubric_list,"
+               "items.attribute_groups,items.contact_groups"),
     "key":    KEY,
     "locale": "ru_RU",
 }
@@ -114,6 +115,10 @@ if items2:
         print(f"attribute_groups (первая группа): {json.dumps(attr[0], ensure_ascii=False)[:300]}")
     else:
         print("attribute_groups: нет")
+    cg2 = det.get("contact_groups")
+    print(f"contact_groups (byid): {'есть' if cg2 else 'нет'}")
+    if cg2:
+        print(json.dumps(cg2, ensure_ascii=False)[:500])
 else:
     print("⚠️  byid вернул пустой items")
     print(json.dumps(d2, ensure_ascii=False, indent=2)[:500])

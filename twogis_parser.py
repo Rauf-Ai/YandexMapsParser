@@ -350,7 +350,8 @@ def _enrich_byid(company: dict) -> dict:
     params = {
         "id":     org_id,
         "fields": ("items.schedule,items.description_short,"
-                   "items.rubric_list,items.attribute_groups,items.photos"),
+                   "items.rubric_list,items.attribute_groups,items.photos,"
+                   "items.contact_groups"),
         "key":    _get_api_key(),
         "locale": "ru_RU",
     }
@@ -358,13 +359,27 @@ def _enrich_byid(company: dict) -> dict:
         resp = SESSION.get(_BYID_API, params=params, timeout=15)
         if resp.status_code not in (401, 403):
             resp.raise_for_status()
-        items = resp.json().get("result", {}).get("items", [])
+        data  = resp.json()
+        items = data.get("result", {}).get("items") or data.get("items") or []
         if not items:
             return company
         detail = items[0]
     except Exception as exc:
         log.debug("byid %s: %s", org_id, exc)
         return company
+
+    # Fill contacts from byid if search didn't return them
+    if company.get("phone") == "—" or company.get("site") == "—":
+        cg = detail.get("contact_groups") or []
+        if cg:
+            phone_str, site, social = _extract_contacts(cg)
+            if company.get("phone") == "—" and phone_str != "—":
+                company["phone"] = phone_str
+            if company.get("site") == "—" and site != "—":
+                company["site"]     = site
+                company["has_site"] = "Да"
+            if company.get("social") == "—" and social != "—":
+                company["social"] = social
 
     if not company.get("hours"):
         schedule = detail.get("schedule")
