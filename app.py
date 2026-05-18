@@ -573,4 +573,5 @@ def api_start_org():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    app.run(debug=True, threaded=True, port=5000)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(debug=True, threaded=True, port=port)
