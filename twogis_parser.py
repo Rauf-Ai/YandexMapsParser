@@ -575,16 +575,6 @@ def collect(query: str, max_companies: int = 100,
         if emit:
             emit(event, **kw)
 
-    # Start browser session for contact enrichment (API free tier lacks contacts)
-    try:
-        from browser_fetch import BrowserSession
-        bs = BrowserSession()
-        bs.start()
-        if bs.available:
-            log.debug("BrowserSession ready for contact enrichment")
-    except Exception:
-        bs = None
-
     hard_cap  = min(max_companies * 8, 1000) if filter_fn else max_companies
     all_seen:    set[tuple] = set()
     all_fetched: list[dict] = []
@@ -595,100 +585,59 @@ def collect(query: str, max_companies: int = 100,
         return (len(passed) >= max_companies if filter_fn
                 else len(all_fetched) >= max_companies)
 
-    try:
-        for page in range(1, 150):  # 10 per page → up to 1500 results
-            if _target_reached() or len(all_fetched) >= hard_cap:
+    for page in range(1, 150):  # 10 per page → up to 1500 results
+        if _target_reached() or len(all_fetched) >= hard_cap:
+            break
+
+        _emit("progress",
+              found=len(passed) if filter_fn else len(all_fetched),
+              total=max_companies,
+              message=f"Загружаем страницу {page}…"
+                      + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
+
+        try:
+            items = _search_page(query, page)
+        except _ApiError as exc:
+            _emit("error", message=str(exc))
+            return []
+        except Exception as exc:
+            _emit("error", message=f"2ГИС: ошибка запроса страницы {page}: {exc}")
+            return []
+        if not items:
+            streak += 1
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
+                  message=f"Страница {page}: нет результатов (попытка {streak}/3)…")
+            if streak >= 3:
                 break
+            _sleep(0.8, 2.0)
+            continue
+        streak = 0
+
+        for item in items:
+            c   = _parse_item(item)
+            key = _dedup_key(c)
+            if key in all_seen:
+                continue
+            all_seen.add(key)
 
             _emit("progress",
                   found=len(passed) if filter_fn else len(all_fetched),
                   total=max_companies,
-                  message=f"Загружаем страницу {page}…"
-                          + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
+                  message=f"Обогащаем: {c['name'][:40]}…")
 
-            try:
-                items = _search_page(query, page)
-            except _ApiError as exc:
-                _emit("error", message=str(exc))
-                return []
-            except Exception as exc:
-                _emit("error", message=f"2ГИС: ошибка запроса страницы {page}: {exc}")
-                return []
-            if not items:
-                streak += 1
-                _emit("progress",
-                      found=len(passed) if filter_fn else len(all_fetched),
-                      total=max_companies,
-                      message=f"Страница {page}: нет результатов (попытка {streak}/3)…")
-                if streak >= 3:
-                    break
-                _sleep(0.8, 2.0)
-                continue
-            streak = 0
+            c = _enrich_byid(c)
+            _sleep(0.4, 1.0)
+            all_fetched.append(c)
 
-            for item in items:
-                c   = _parse_item(item)
-                key = _dedup_key(c)
-                if key in all_seen:
-                    continue
-                all_seen.add(key)
+            if filter_fn and filter_fn(c):
+                passed.append(c)
 
-                _emit("progress",
-                      found=len(passed) if filter_fn else len(all_fetched),
-                      total=max_companies,
-                      message=f"Обогащаем: {c['name'][:40]}…")
+            if _target_reached() or len(all_fetched) >= hard_cap:
+                break
 
-                c = _enrich_byid(c)
-
-                # Step 1: requests-based contact extraction (fast, no Playwright)
-                # 2GIS uses Next.js SSR → JSON-LD in static HTML has contacts
-                needs_contacts = (c.get("phone") == "—" or c.get("site") == "—"
-                                  or c.get("social") == "—")
-                if needs_contacts:
-                    org_id_val = c.get("id", "")
-                    if org_id_val:
-                        ph, st, sc = _fetch_contacts_web(org_id_val)
-                        if c.get("phone") == "—" and ph != "—":
-                            c["phone"] = ph
-                        if c.get("site") == "—" and st != "—":
-                            c["site"]     = st
-                            c["has_site"] = "Да"
-                        if c.get("social") == "—" and sc != "—":
-                            c["social"] = sc
-
-                # Step 2: Playwright fallback (slow, only if requests failed)
-                still_needs = (c.get("phone") == "—" or c.get("site") == "—"
-                               or not c.get("description"))
-                if still_needs and bs and bs.available:
-                    map_url = c.get("map_url", "")
-                    if map_url:
-                        page_html = bs.fetch(map_url, scroll_px=400,
-                                             wait_ms=2_000, timeout_ms=15_000)
-                        if page_html:
-                            ph, st, sc = _extract_contacts_html(page_html)
-                            if c.get("phone") == "—" and ph != "—":
-                                c["phone"] = ph
-                            if c.get("site") == "—" and st != "—":
-                                c["site"]     = st
-                                c["has_site"] = "Да"
-                            if c.get("social") == "—" and sc != "—":
-                                c["social"] = sc
-                            _enrich_from_jsonld(page_html, c)
-
-                _sleep(0.4, 1.0)
-                all_fetched.append(c)
-
-                if filter_fn and filter_fn(c):
-                    passed.append(c)
-
-                if _target_reached() or len(all_fetched) >= hard_cap:
-                    break
-
-            _sleep(0.6, 1.5)
-
-    finally:
-        if bs:
-            bs.stop()
+        _sleep(0.6, 1.5)
 
     return passed if filter_fn else all_fetched
 
