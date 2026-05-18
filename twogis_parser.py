@@ -500,6 +500,26 @@ def _extract_contacts_html(html: str) -> tuple[str, str, str]:
     )
 
 
+def _fetch_contacts_web(org_id: str) -> tuple[str, str, str]:
+    """Fetch contacts from 2GIS org page via plain HTTP (no browser needed).
+
+    2GIS uses Next.js SSR — the static HTML contains JSON-LD with
+    telephone, url, sameAs (social links) for SEO. No Playwright required.
+    """
+    numeric_id = re.sub(r"[^0-9]", "", org_id)
+    if not numeric_id:
+        return "—", "—", "—"
+    url = f"https://2gis.ru/firm/{numeric_id}"
+    try:
+        resp = SESSION.get(url, timeout=10)
+        if resp.status_code != 200:
+            return "—", "—", "—"
+        return _extract_contacts_html(resp.text)
+    except Exception as exc:
+        log.debug("web contacts %s: %s", numeric_id, exc)
+        return "—", "—", "—"
+
+
 def _enrich_from_jsonld(html: str, company: dict):
     """Pull description, rating, review count from JSON-LD on the rendered page."""
     try:
@@ -620,15 +640,26 @@ def collect(query: str, max_companies: int = 100,
 
                 c = _enrich_byid(c)
 
-                # Browser fallback: contacts + description + rating from page
-                needs_browser = (
-                    c.get("phone") == "—"
-                    or c.get("site") == "—"
-                    or c.get("social") == "—"
-                    or not c.get("description")
-                    or c.get("rating") == "—"
-                )
-                if needs_browser and bs and bs.available:
+                # Step 1: requests-based contact extraction (fast, no Playwright)
+                # 2GIS uses Next.js SSR → JSON-LD in static HTML has contacts
+                needs_contacts = (c.get("phone") == "—" or c.get("site") == "—"
+                                  or c.get("social") == "—")
+                if needs_contacts:
+                    org_id_val = c.get("id", "")
+                    if org_id_val:
+                        ph, st, sc = _fetch_contacts_web(org_id_val)
+                        if c.get("phone") == "—" and ph != "—":
+                            c["phone"] = ph
+                        if c.get("site") == "—" and st != "—":
+                            c["site"]     = st
+                            c["has_site"] = "Да"
+                        if c.get("social") == "—" and sc != "—":
+                            c["social"] = sc
+
+                # Step 2: Playwright fallback (slow, only if requests failed)
+                still_needs = (c.get("phone") == "—" or c.get("site") == "—"
+                               or not c.get("description"))
+                if still_needs and bs and bs.available:
                     map_url = c.get("map_url", "")
                     if map_url:
                         page_html = bs.fetch(map_url, scroll_px=400,
@@ -642,7 +673,6 @@ def collect(query: str, max_companies: int = 100,
                                 c["has_site"] = "Да"
                             if c.get("social") == "—" and sc != "—":
                                 c["social"] = sc
-                            # Also pick up description and rating from JSON-LD
                             _enrich_from_jsonld(page_html, c)
 
                 _sleep(0.4, 1.0)
