@@ -217,13 +217,18 @@ def _parse_schedule(schedule: dict) -> str:
 # ---------------------------------------------------------------------------
 def _extract_attribute_features(attr_groups: list) -> str:
     feats: list[str] = []
-    _skip_values = {"нет", "no", "false", "0", "недоступно", "unavailable", ""}
+    _negative = {"нет", "no", "false", "0", "недоступно", "unavailable"}
     for group in (attr_groups or []):
         for attr in (group.get("attributes") or []):
             name = (attr.get("name") or "").strip()
-            val  = str(attr.get("value") or "").strip().lower()
-            if not name or val in _skip_values:
+            if not name or len(name) > 70:
                 continue
+            raw_val = attr.get("value")
+            if raw_val is not None:
+                # Explicit negative value — skip
+                if str(raw_val).strip().lower() in _negative:
+                    continue
+            # No value field at all = feature is present (2GIS convention)
             feats.append(name)
     return ", ".join(feats[:25])
 
@@ -407,14 +412,21 @@ def _enrich_byid(company: dict) -> dict:
 # Browser-based contact extraction (fallback when API lacks contact_groups)
 # ---------------------------------------------------------------------------
 _SKIP_DOMAINS = frozenset([
-    "2gis.ru", "flamp.ru", "api.", "disk.", "yandex.", "google.",
-    "apple.", "maps.", "schema.org", "w3.org",
+    "2gis.ru", "flamp.ru", "api.", "disk.2gis", "yandex.", "google.",
+    "apple.", "schema.org", "w3.org",
 ])
 
 def _extract_contacts_html(html: str) -> tuple[str, str, str]:
-    """Extract phone/site/social from a rendered 2GIS org page."""
+    """Extract phone/site/social from a rendered 2GIS org page.
+
+    Strategy:
+    1. Parse JSON-LD <script type="application/ld+json"> — structured data
+       has telephone, url, sameAs (social links) reliably.
+    2. Fallback: scan all <a href> for tel:, social domains, external sites.
+    """
     try:
         from bs4 import BeautifulSoup
+        import json as _json
     except ImportError:
         return "—", "—", "—"
 
@@ -423,6 +435,44 @@ def _extract_contacts_html(html: str) -> tuple[str, str, str]:
     sites:  list[str] = []
     socials: list[str] = []
 
+    # ── Pass 1: JSON-LD (most reliable) ──────────────────────────────────
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            raw = (script.string or "").strip()
+            if not raw:
+                continue
+            data = _json.loads(raw)
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if not isinstance(data, dict):
+                continue
+
+            tel = data.get("telephone") or ""
+            if tel:
+                fmt = _fmt_phone(str(tel))
+                if fmt not in phones:
+                    phones.append(fmt)
+
+            for key in ("url", "website"):
+                u = data.get(key) or ""
+                if u and not any(d in u for d in _SKIP_DOMAINS):
+                    if _is_social_url(u):
+                        c = _clean_site(u)
+                        if c not in socials:
+                            socials.append(c)
+                    elif not sites:
+                        sites.append(_clean_site(u))
+
+            for same in (data.get("sameAs") or []):
+                same = str(same)
+                if _is_social_url(same):
+                    c = _clean_site(same)
+                    if c not in socials:
+                        socials.append(c)
+        except Exception:
+            pass
+
+    # ── Pass 2: <a href> fallback ─────────────────────────────────────────
     for a in soup.find_all("a", href=True):
         href = (a.get("href") or "").strip()
         if href.startswith("tel:"):
@@ -448,6 +498,52 @@ def _extract_contacts_html(html: str) -> tuple[str, str, str]:
         sites[0]               if sites   else "—",
         ", ".join(socials[:5]) if socials else "—",
     )
+
+
+def _enrich_from_jsonld(html: str, company: dict):
+    """Pull description, rating, review count from JSON-LD on the rendered page."""
+    try:
+        from bs4 import BeautifulSoup
+        import json as _json
+    except ImportError:
+        return
+
+    soup = BeautifulSoup(html, "html.parser")
+    for script in soup.find_all("script", type="application/ld+json"):
+        try:
+            raw = (script.string or "").strip()
+            if not raw:
+                continue
+            data = _json.loads(raw)
+            if isinstance(data, list):
+                data = data[0] if data else {}
+            if not isinstance(data, dict):
+                continue
+
+            if not company.get("description"):
+                desc = data.get("description") or ""
+                if desc:
+                    company["description"] = str(desc)[:200]
+
+            if company.get("rating") == "—":
+                agg = data.get("aggregateRating") or {}
+                rv  = agg.get("ratingValue") or data.get("ratingValue")
+                if rv:
+                    try:
+                        company["rating"] = round(float(str(rv).replace(",", ".")), 1)
+                    except (ValueError, TypeError):
+                        pass
+
+            if not company.get("reviews") or company["reviews"] == 0:
+                agg = data.get("aggregateRating") or {}
+                rc  = agg.get("reviewCount") or agg.get("ratingCount")
+                if rc:
+                    try:
+                        company["reviews"] = int(rc)
+                    except (ValueError, TypeError):
+                        pass
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -524,15 +620,21 @@ def collect(query: str, max_companies: int = 100,
 
                 c = _enrich_byid(c)
 
-                # Browser fallback for contacts (free API tier omits contact_groups)
-                needs_contacts = c.get("phone") == "—" or c.get("site") == "—"
-                if needs_contacts and bs and bs.available:
+                # Browser fallback: contacts + description + rating from page
+                needs_browser = (
+                    c.get("phone") == "—"
+                    or c.get("site") == "—"
+                    or c.get("social") == "—"
+                    or not c.get("description")
+                    or c.get("rating") == "—"
+                )
+                if needs_browser and bs and bs.available:
                     map_url = c.get("map_url", "")
                     if map_url:
-                        html = bs.fetch(map_url, scroll_px=300, wait_ms=2_000,
-                                        timeout_ms=15_000)
-                        if html:
-                            ph, st, sc = _extract_contacts_html(html)
+                        page_html = bs.fetch(map_url, scroll_px=400,
+                                             wait_ms=2_000, timeout_ms=15_000)
+                        if page_html:
+                            ph, st, sc = _extract_contacts_html(page_html)
                             if c.get("phone") == "—" and ph != "—":
                                 c["phone"] = ph
                             if c.get("site") == "—" and st != "—":
@@ -540,6 +642,8 @@ def collect(query: str, max_companies: int = 100,
                                 c["has_site"] = "Да"
                             if c.get("social") == "—" and sc != "—":
                                 c["social"] = sc
+                            # Also pick up description and rating from JSON-LD
+                            _enrich_from_jsonld(page_html, c)
 
                 _sleep(0.4, 1.0)
                 all_fetched.append(c)
