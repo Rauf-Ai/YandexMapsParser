@@ -255,12 +255,19 @@ def _search_page(query: str, page: int) -> list[dict]:
                 f"2ГИС API вернул {resp.status_code}. "
                 f"Проверьте API-ключ (TWOGIS_API_KEY) или зарегистрируйтесь на dev.2gis.ru"
             )
-        resp.raise_for_status()
-        return resp.json().get("result", {}).get("items", [])
+        if not resp.ok:
+            log.warning("2GIS search page=%d HTTP %d: %s", page, resp.status_code, resp.text[:300])
+            raise _ApiError(resp.status_code,
+                            f"2ГИС API вернул {resp.status_code} (страница {page})")
+        data  = resp.json()
+        items = data.get("result", {}).get("items") or data.get("items") or []
+        log.debug("2GIS search page=%d total=%s items=%d",
+                  page, data.get("result", {}).get("total", "?"), len(items))
+        return items
     except _ApiError:
         raise
     except Exception as exc:
-        log.warning("2GIS search page=%d: %s", page, exc)
+        log.warning("2GIS search page=%d exception: %s", page, exc)
         return []
 
 # ---------------------------------------------------------------------------
@@ -282,12 +289,23 @@ def _parse_item(item: dict) -> dict:
 
     reviews_obj = item.get("reviews") or {}
     try:
-        rating = round(float(reviews_obj.get("rating") or 0), 1)
+        # API v3 uses general_rating / org_rating; older responses used rating
+        raw_rating = (reviews_obj.get("general_rating")
+                      or reviews_obj.get("org_rating")
+                      or reviews_obj.get("rating")
+                      or 0)
+        rating = round(float(raw_rating), 1)
         rating = rating if rating > 0 else "—"
     except (TypeError, ValueError):
         rating = "—"
     try:
-        n_reviews = int(reviews_obj.get("count") or 0)
+        # API v3 uses general_review_count; older responses used count
+        n_reviews = int(
+            reviews_obj.get("general_review_count")
+            or reviews_obj.get("org_review_count")
+            or reviews_obj.get("count")
+            or 0
+        )
     except (TypeError, ValueError):
         n_reviews = 0
 
@@ -403,13 +421,16 @@ def collect(query: str, max_companies: int = 100,
         except _ApiError as exc:
             _emit("error", message=str(exc))
             return []
+        except Exception as exc:
+            _emit("error", message=f"2ГИС: ошибка запроса страницы {page}: {exc}")
+            return []
         if not items:
             streak += 1
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
+                  message=f"Страница {page}: нет результатов (попытка {streak}/3)…")
             if streak >= 3:
-                _emit("progress",
-                      found=len(passed) if filter_fn else len(all_fetched),
-                      total=max_companies,
-                      message="2ГИС больше не отдаёт результаты.")
                 break
             _sleep(0.8, 2.0)
             continue
