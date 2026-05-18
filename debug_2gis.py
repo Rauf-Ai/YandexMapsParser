@@ -39,7 +39,7 @@ print("=" * 60)
 params = {
     "q":         "Рестораны Самара",
     "page":      1,
-    "page_size": 50,
+    "page_size": 10,   # API v3 max is 10
     "fields":    ("items.point,items.contact_groups,items.rubrics,"
                   "items.reviews,items.photos,items.name_ex"),
     "key":       KEY,

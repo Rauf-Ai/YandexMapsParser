@@ -241,7 +241,7 @@ def _search_page(query: str, page: int) -> list[dict]:
     params = {
         "q":         query,
         "page":      page,
-        "page_size": 50,
+        "page_size": 10,   # API v3 max is 10
         "fields":    ("items.point,items.contact_groups,items.rubrics,"
                       "items.reviews,items.photos,items.name_ex"),
         "key":       _get_api_key(),
@@ -396,7 +396,7 @@ def collect(query: str, max_companies: int = 100,
         if emit:
             emit(event, **kw)
 
-    hard_cap  = min(max_companies * 8, 400) if filter_fn else max_companies
+    hard_cap  = min(max_companies * 8, 1000) if filter_fn else max_companies
     all_seen:    set[tuple] = set()
     all_fetched: list[dict] = []
     passed:      list[dict] = []
@@ -406,7 +406,7 @@ def collect(query: str, max_companies: int = 100,
         return (len(passed) >= max_companies if filter_fn
                 else len(all_fetched) >= max_companies)
 
-    for page in range(1, 20):
+    for page in range(1, 150):  # 10 per page → up to 1500 results
         if _target_reached() or len(all_fetched) >= hard_cap:
             break
 
