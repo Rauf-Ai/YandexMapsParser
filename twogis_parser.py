@@ -402,6 +402,54 @@ def _enrich_byid(company: dict) -> dict:
 
     return company
 
+
+# ---------------------------------------------------------------------------
+# Browser-based contact extraction (fallback when API lacks contact_groups)
+# ---------------------------------------------------------------------------
+_SKIP_DOMAINS = frozenset([
+    "2gis.ru", "flamp.ru", "api.", "disk.", "yandex.", "google.",
+    "apple.", "maps.", "schema.org", "w3.org",
+])
+
+def _extract_contacts_html(html: str) -> tuple[str, str, str]:
+    """Extract phone/site/social from a rendered 2GIS org page."""
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return "—", "—", "—"
+
+    soup   = BeautifulSoup(html, "html.parser")
+    phones: list[str] = []
+    sites:  list[str] = []
+    socials: list[str] = []
+
+    for a in soup.find_all("a", href=True):
+        href = (a.get("href") or "").strip()
+        if href.startswith("tel:"):
+            raw = href[4:].strip()
+            if raw:
+                fmt = _fmt_phone(raw)
+                if fmt not in phones:
+                    phones.append(fmt)
+        elif href.startswith(("http://", "https://")):
+            if any(d in href for d in _SKIP_DOMAINS):
+                continue
+            if _is_social_url(href):
+                c = _clean_site(href)
+                if c not in socials:
+                    socials.append(c)
+            else:
+                c = _clean_site(href)
+                if c not in sites:
+                    sites.append(c)
+
+    return (
+        ", ".join(phones[:3])  if phones  else "—",
+        sites[0]               if sites   else "—",
+        ", ".join(socials[:5]) if socials else "—",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Main collect()
 # ---------------------------------------------------------------------------
@@ -410,6 +458,16 @@ def collect(query: str, max_companies: int = 100,
     def _emit(event, **kw):
         if emit:
             emit(event, **kw)
+
+    # Start browser session for contact enrichment (API free tier lacks contacts)
+    try:
+        from browser_fetch import BrowserSession
+        bs = BrowserSession()
+        bs.start()
+        if bs.available:
+            log.debug("BrowserSession ready for contact enrichment")
+    except Exception:
+        bs = None
 
     hard_cap  = min(max_companies * 8, 1000) if filter_fn else max_companies
     all_seen:    set[tuple] = set()
@@ -421,59 +479,82 @@ def collect(query: str, max_companies: int = 100,
         return (len(passed) >= max_companies if filter_fn
                 else len(all_fetched) >= max_companies)
 
-    for page in range(1, 150):  # 10 per page → up to 1500 results
-        if _target_reached() or len(all_fetched) >= hard_cap:
-            break
-
-        _emit("progress",
-              found=len(passed) if filter_fn else len(all_fetched),
-              total=max_companies,
-              message=f"Загружаем страницу {page}…"
-                      + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
-
-        try:
-            items = _search_page(query, page)
-        except _ApiError as exc:
-            _emit("error", message=str(exc))
-            return []
-        except Exception as exc:
-            _emit("error", message=f"2ГИС: ошибка запроса страницы {page}: {exc}")
-            return []
-        if not items:
-            streak += 1
-            _emit("progress",
-                  found=len(passed) if filter_fn else len(all_fetched),
-                  total=max_companies,
-                  message=f"Страница {page}: нет результатов (попытка {streak}/3)…")
-            if streak >= 3:
-                break
-            _sleep(0.8, 2.0)
-            continue
-        streak = 0
-
-        for item in items:
-            c   = _parse_item(item)
-            key = _dedup_key(c)
-            if key in all_seen:
-                continue
-            all_seen.add(key)
-
-            _emit("progress",
-                  found=len(passed) if filter_fn else len(all_fetched),
-                  total=max_companies,
-                  message=f"Обогащаем: {c['name'][:40]}…")
-
-            c = _enrich_byid(c)
-            _sleep(0.4, 1.2)
-            all_fetched.append(c)
-
-            if filter_fn and filter_fn(c):
-                passed.append(c)
-
+    try:
+        for page in range(1, 150):  # 10 per page → up to 1500 results
             if _target_reached() or len(all_fetched) >= hard_cap:
                 break
 
-        _sleep(0.8, 2.0)
+            _emit("progress",
+                  found=len(passed) if filter_fn else len(all_fetched),
+                  total=max_companies,
+                  message=f"Загружаем страницу {page}…"
+                          + (f" (проверено: {len(all_fetched)})" if filter_fn else ""))
+
+            try:
+                items = _search_page(query, page)
+            except _ApiError as exc:
+                _emit("error", message=str(exc))
+                return []
+            except Exception as exc:
+                _emit("error", message=f"2ГИС: ошибка запроса страницы {page}: {exc}")
+                return []
+            if not items:
+                streak += 1
+                _emit("progress",
+                      found=len(passed) if filter_fn else len(all_fetched),
+                      total=max_companies,
+                      message=f"Страница {page}: нет результатов (попытка {streak}/3)…")
+                if streak >= 3:
+                    break
+                _sleep(0.8, 2.0)
+                continue
+            streak = 0
+
+            for item in items:
+                c   = _parse_item(item)
+                key = _dedup_key(c)
+                if key in all_seen:
+                    continue
+                all_seen.add(key)
+
+                _emit("progress",
+                      found=len(passed) if filter_fn else len(all_fetched),
+                      total=max_companies,
+                      message=f"Обогащаем: {c['name'][:40]}…")
+
+                c = _enrich_byid(c)
+
+                # Browser fallback for contacts (free API tier omits contact_groups)
+                needs_contacts = c.get("phone") == "—" or c.get("site") == "—"
+                if needs_contacts and bs and bs.available:
+                    map_url = c.get("map_url", "")
+                    if map_url:
+                        html = bs.fetch(map_url, scroll_px=300, wait_ms=2_000,
+                                        timeout_ms=15_000)
+                        if html:
+                            ph, st, sc = _extract_contacts_html(html)
+                            if c.get("phone") == "—" and ph != "—":
+                                c["phone"] = ph
+                            if c.get("site") == "—" and st != "—":
+                                c["site"]     = st
+                                c["has_site"] = "Да"
+                            if c.get("social") == "—" and sc != "—":
+                                c["social"] = sc
+
+                _sleep(0.4, 1.0)
+                all_fetched.append(c)
+
+                if filter_fn and filter_fn(c):
+                    passed.append(c)
+
+                if _target_reached() or len(all_fetched) >= hard_cap:
+                    break
+
+            _sleep(0.6, 1.5)
+
+    finally:
+        if bs:
+            bs.stop()
 
     return passed if filter_fn else all_fetched
 
